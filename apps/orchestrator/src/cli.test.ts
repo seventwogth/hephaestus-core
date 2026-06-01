@@ -5,7 +5,9 @@ import { describe, expect, it } from "vitest";
 import {
   parseScaffoldArgs,
   parseRequirementsArgs,
+  parsePlanArgs,
   parseValidateArgs,
+  saveArchitecturePlan,
   saveRequirementsSpec,
   scaffoldFromSpecFile,
   validateProjectDirectory
@@ -38,6 +40,13 @@ describe("scaffold CLI", () => {
     });
   });
 
+  it("parses plan arguments", () => {
+    expect(parsePlanArgs(["--spec", "SPEC.json", "--out", "PLAN.json"])).toEqual({
+      specPath: "SPEC.json",
+      outPath: "PLAN.json"
+    });
+  });
+
   it("saves ProjectSpec from free-form requirements", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "hephaestus-cli-"));
     const outPath = join(rootDir, "SPEC.json");
@@ -53,6 +62,28 @@ describe("scaffold CLI", () => {
       expect(spec.projectName).toBe("book-tracker");
       expect(spec.entities[0].name).toBe("Book");
       expect(spec.features.map((feature: { id: string }) => feature.id)).toContain("registration");
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("saves architecture plan from ProjectSpec", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "hephaestus-cli-"));
+    const specPath = join(rootDir, "SPEC.json");
+    const planPath = join(rootDir, "PLAN.json");
+
+    try {
+      await saveRequirementsSpec({
+        text: "Создай сервис учета книг. Пользователь должен зарегистрироваться, войти, добавлять книги, редактировать и удалять записи.",
+        outPath: specPath
+      });
+      await saveArchitecturePlan({ specPath, outPath: planPath });
+
+      const plan = JSON.parse(await readFile(planPath, "utf8"));
+
+      expect(plan.stack.backend).toBe("go-chi");
+      expect(plan.backendModules).toContain("books");
+      expect(plan.endpoints.map((endpoint: { path: string }) => endpoint.path)).toContain("/api/books");
     } finally {
       await rm(rootDir, { recursive: true, force: true });
     }

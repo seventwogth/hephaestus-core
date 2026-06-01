@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { analyzeRequirements } from "./index.js";
+import { analyzeRequirements, createArchitecturePlan } from "./index.js";
 
 describe("analyzeRequirements", () => {
   it("turns a Russian book tracker request into a ProjectSpec", () => {
@@ -27,5 +27,19 @@ describe("analyzeRequirements", () => {
 
   it("rejects empty descriptions", () => {
     expect(() => analyzeRequirements({ text: " " })).toThrow("не должно быть пустым");
+  });
+
+  it("creates an architecture plan from ProjectSpec", () => {
+    const spec = analyzeRequirements({
+      text: "Создай сервис учета книг. Пользователь должен зарегистрироваться, войти, добавлять книги, редактировать и удалять записи."
+    });
+    const plan = createArchitecturePlan(spec);
+
+    expect(plan.stack.backend).toBe("go-chi");
+    expect(plan.backendModules).toContain("auth");
+    expect(plan.backendModules).toContain("books");
+    expect(plan.frontendRoutes).toContain("/books");
+    expect(plan.endpoints.map((endpoint) => endpoint.path)).toContain("/api/books");
+    expect(plan.validationCommands).toContain("cd backend && go test ./...");
   });
 });

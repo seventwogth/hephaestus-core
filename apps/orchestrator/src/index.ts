@@ -1,5 +1,6 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { createArchitecturePlan } from "@hephaestus/agents";
 import { type AgentRole, type AgentRunResult, type ModelProvider } from "@hephaestus/hermes-adapter";
 import { ProjectSandbox } from "@hephaestus/project-sandbox";
 import {
@@ -131,6 +132,19 @@ export class Orchestrator {
   async approveSpec(projectDir: string, plan: ProjectPlan): Promise<void> {
     await this.store.writePlan(projectDir, plan);
     await this.store.writeStatus(projectDir, newStatus("GENERATING"));
+  }
+
+  async planProject(projectDir: string): Promise<ProjectPlan> {
+    const spec = await this.store.readSpec(projectDir);
+    if (!spec) {
+      throw new Error("SPEC.json не найден");
+    }
+
+    const plan = createArchitecturePlan(spec);
+    await this.approveSpec(projectDir, plan);
+    await this.updateTaskStatus(projectDir, "architecture", "done");
+
+    return plan;
   }
 
   async runAgentStage(projectDir: string, input: AgentStageInput): Promise<AgentRunResult> {

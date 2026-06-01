@@ -73,6 +73,12 @@ npm run scaffold -- --spec ./examples/book-tracker.spec.json --out ./generated-p
 В MVP CLI ожидает спецификацию в формате `ProjectSpec` из пакета
 `@hephaestus/contracts`.
 
+Из `SPEC.json` можно сформировать технический план `PLAN.json`:
+
+```bash
+npm run scaffold -- plan --spec ./generated-projects/book-tracker/SPEC.json --out ./generated-projects/book-tracker/PLAN.json
+```
+
 ## Проверка созданного проекта
 
 После создания проекта можно запустить проверочный этап:

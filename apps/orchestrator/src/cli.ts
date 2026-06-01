@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { analyzeRequirements } from "@hephaestus/agents";
+import { analyzeRequirements, createArchitecturePlan } from "@hephaestus/agents";
 import { projectSpecSchema } from "@hephaestus/contracts";
 import { type ValidationCheck, validateGeneratedWebApp } from "@hephaestus/project-validator";
 import { FileProjectStateStore, Orchestrator } from "./index.js";
@@ -20,6 +20,11 @@ export interface RequirementsCliOptions {
   inputPath?: string;
   outPath: string;
   projectName?: string;
+}
+
+export interface PlanCliOptions {
+  specPath: string;
+  outPath: string;
 }
 
 export function parseScaffoldArgs(args: string[]): ScaffoldCliOptions {
@@ -68,6 +73,17 @@ export function parseRequirementsArgs(args: string[]): RequirementsCliOptions {
   };
 }
 
+export function parsePlanArgs(args: string[]): PlanCliOptions {
+  const specPath = readOption(args, "--spec");
+  const outPath = readOption(args, "--out");
+
+  if (!specPath || !outPath) {
+    throw new Error("Использование: hephaestus-scaffold plan --spec ./SPEC.json --out ./PLAN.json");
+  }
+
+  return { specPath, outPath };
+}
+
 export async function scaffoldFromSpecFile(options: ScaffoldCliOptions): Promise<string> {
   const specPath = resolve(options.specPath);
   const outDir = resolve(options.outDir);
@@ -92,6 +108,17 @@ export async function saveRequirementsSpec(options: RequirementsCliOptions): Pro
   return outPath;
 }
 
+export async function saveArchitecturePlan(options: PlanCliOptions): Promise<string> {
+  const specPath = resolve(options.specPath);
+  const outPath = resolve(options.outPath);
+  const rawSpec = await readFile(specPath, "utf8");
+  const spec = projectSpecSchema.parse(JSON.parse(rawSpec));
+  const plan = createArchitecturePlan(spec);
+
+  await writeFile(outPath, `${JSON.stringify(plan, null, 2)}\n`, "utf8");
+  return outPath;
+}
+
 export async function validateProjectDirectory(
   options: ValidateCliOptions,
   checks?: ValidationCheck[]
@@ -107,6 +134,12 @@ async function main(): Promise<void> {
   if (args[0] === "requirements") {
     const outPath = await saveRequirementsSpec(parseRequirementsArgs(args.slice(1)));
     console.log(`Спецификация сохранена: ${outPath}`);
+    return;
+  }
+
+  if (args[0] === "plan") {
+    const outPath = await saveArchitecturePlan(parsePlanArgs(args.slice(1)));
+    console.log(`Технический план сохранен: ${outPath}`);
     return;
   }
 

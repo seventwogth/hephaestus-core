@@ -119,6 +119,45 @@ describe("Orchestrator", () => {
     }
   });
 
+  it("creates architecture plan from stored spec", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
+
+    try {
+      const orchestrator = new Orchestrator(new FileProjectStateStore());
+
+      await orchestrator.initializeProject(projectDir, {
+        projectName: "book-tracker",
+        description: "Track personal books",
+        actors: [{ name: "user" }],
+        features: [
+          {
+            id: "books-crud",
+            title: "Manage books",
+            description: "Create, update, and delete books",
+            priority: "must"
+          }
+        ],
+        entities: [{ name: "Book", fields: ["title", "author"] }],
+        requiresAuth: true,
+        requiresDatabase: true,
+        constraints: [],
+        acceptanceCriteria: ["User can manage only their own books"]
+      });
+
+      const plan = await orchestrator.planProject(projectDir);
+      const status = JSON.parse(await readFile(join(projectDir, "STATUS.json"), "utf8"));
+      const tasks = JSON.parse(await readFile(join(projectDir, "TASKS.json"), "utf8"));
+      const architectureTask = tasks.tasks.find((task: { id: string }) => task.id === "architecture");
+
+      expect(plan.backendModules).toContain("books");
+      expect(status.stage).toBe("GENERATING");
+      expect(architectureTask.status).toBe("done");
+      await expect(readFile(join(projectDir, "PLAN.json"), "utf8")).resolves.toContain("/api/books");
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it("moves project to READY after successful validation", async () => {
     const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
 

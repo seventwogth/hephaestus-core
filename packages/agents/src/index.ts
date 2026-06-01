@@ -1,4 +1,9 @@
-import { type ProjectSpec, projectSpecSchema } from "@hephaestus/contracts";
+import {
+  type ProjectPlan,
+  type ProjectSpec,
+  projectPlanSchema,
+  projectSpecSchema
+} from "@hephaestus/contracts";
 
 export interface RequirementsAnalysisInput {
   text: string;
@@ -32,6 +37,60 @@ export function analyzeRequirements(input: RequirementsAnalysisInput): ProjectSp
     requiresDatabase: true,
     constraints: inferConstraints(normalizedText),
     acceptanceCriteria: inferAcceptanceCriteria(normalizedText, requiresAuth)
+  });
+}
+
+export function createArchitecturePlan(spec: ProjectSpec): ProjectPlan {
+  const normalizedSpec = projectSpecSchema.parse(spec);
+  const primaryEntity = normalizedSpec.entities[0] ?? {
+    name: "Item",
+    fields: ["title", "description", "status"],
+    description: "Основная сущность приложения"
+  };
+  const resourceName = toResourceName(primaryEntity.name);
+  const backendModules = [
+    "health",
+    ...(normalizedSpec.requiresAuth ? ["auth", "users"] : []),
+    resourceName
+  ];
+  const frontendRoutes = [
+    "/",
+    ...(normalizedSpec.requiresAuth ? ["/register", "/login"] : []),
+    `/${resourceName}`
+  ];
+
+  return projectPlanSchema.parse({
+    projectName: normalizedSpec.projectName,
+    stack: {
+      frontend: "react-vite-typescript",
+      backend: "go-chi",
+      database: "postgresql",
+      api: "rest-openapi"
+    },
+    backendModules,
+    frontendRoutes,
+    databaseEntities: normalizedSpec.entities.length > 0 ? normalizedSpec.entities : [primaryEntity],
+    endpoints: [
+      { method: "GET", path: "/health", summary: "Проверка доступности backend", authRequired: false },
+      ...(normalizedSpec.requiresAuth
+        ? [
+            { method: "POST" as const, path: "/api/auth/register", summary: "Регистрация пользователя", authRequired: false },
+            { method: "POST" as const, path: "/api/auth/login", summary: "Вход пользователя", authRequired: false },
+            { method: "GET" as const, path: "/api/users/me", summary: "Получение текущего пользователя", authRequired: true }
+          ]
+        : []),
+      { method: "GET", path: `/api/${resourceName}`, summary: `Список ${primaryEntity.name}`, authRequired: normalizedSpec.requiresAuth },
+      { method: "POST", path: `/api/${resourceName}`, summary: `Создание ${primaryEntity.name}`, authRequired: normalizedSpec.requiresAuth },
+      { method: "PATCH", path: `/api/${resourceName}/:id`, summary: `Обновление ${primaryEntity.name}`, authRequired: normalizedSpec.requiresAuth },
+      { method: "DELETE", path: `/api/${resourceName}/:id`, summary: `Удаление ${primaryEntity.name}`, authRequired: normalizedSpec.requiresAuth }
+    ],
+    validationCommands: [
+      "docker compose config",
+      "cd backend && go test ./...",
+      "cd frontend && npm install",
+      "cd frontend && npm test",
+      "cd frontend && npm run build"
+    ]
   });
 }
 
@@ -211,6 +270,28 @@ function inferProjectName(text: string): string {
   }
 
   return "generated-web-app";
+}
+
+function toResourceName(entityName: string): string {
+  const normalized = entityName.trim().toLowerCase();
+
+  if (normalized === "book") {
+    return "books";
+  }
+
+  if (normalized === "task") {
+    return "tasks";
+  }
+
+  if (normalized === "note") {
+    return "notes";
+  }
+
+  if (normalized.endsWith("s")) {
+    return normalized;
+  }
+
+  return `${normalized}s`;
 }
 
 function hasAny(text: string, markers: string[]): boolean {
