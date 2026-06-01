@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import {
   parseScaffoldArgs,
+  parseRequirementsArgs,
   parseValidateArgs,
+  saveRequirementsSpec,
   scaffoldFromSpecFile,
   validateProjectDirectory
 } from "./cli.js";
@@ -25,6 +27,35 @@ describe("scaffold CLI", () => {
     expect(parseValidateArgs(["--project", "app"])).toEqual({
       projectDir: "app"
     });
+  });
+
+  it("parses requirements arguments", () => {
+    expect(parseRequirementsArgs(["--text", "Создай сервис книг", "--out", "SPEC.json"])).toEqual({
+      text: "Создай сервис книг",
+      inputPath: undefined,
+      outPath: "SPEC.json",
+      projectName: undefined
+    });
+  });
+
+  it("saves ProjectSpec from free-form requirements", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "hephaestus-cli-"));
+    const outPath = join(rootDir, "SPEC.json");
+
+    try {
+      await saveRequirementsSpec({
+        text: "Создай сервис учета книг. Пользователь должен зарегистрироваться, войти, добавлять книги и менять статус прочтения.",
+        outPath
+      });
+
+      const spec = JSON.parse(await readFile(outPath, "utf8"));
+
+      expect(spec.projectName).toBe("book-tracker");
+      expect(spec.entities[0].name).toBe("Book");
+      expect(spec.features.map((feature: { id: string }) => feature.id)).toContain("registration");
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
   });
 
   it("scaffolds a project from a spec file", async () => {

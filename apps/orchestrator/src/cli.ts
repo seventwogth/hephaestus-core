@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { analyzeRequirements } from "@hephaestus/agents";
 import { projectSpecSchema } from "@hephaestus/contracts";
 import { type ValidationCheck, validateGeneratedWebApp } from "@hephaestus/project-validator";
 import { FileProjectStateStore, Orchestrator } from "./index.js";
@@ -12,6 +13,13 @@ export interface ScaffoldCliOptions {
 
 export interface ValidateCliOptions {
   projectDir: string;
+}
+
+export interface RequirementsCliOptions {
+  text?: string;
+  inputPath?: string;
+  outPath: string;
+  projectName?: string;
 }
 
 export function parseScaffoldArgs(args: string[]): ScaffoldCliOptions {
@@ -40,6 +48,26 @@ export function parseValidateArgs(args: string[]): ValidateCliOptions {
   return { projectDir };
 }
 
+export function parseRequirementsArgs(args: string[]): RequirementsCliOptions {
+  const text = readOption(args, "--text") ?? undefined;
+  const inputPath = readOption(args, "--input") ?? undefined;
+  const outPath = readOption(args, "--out");
+  const projectName = readOption(args, "--name") ?? undefined;
+
+  if ((!text && !inputPath) || !outPath) {
+    throw new Error(
+      "Использование: hephaestus-scaffold requirements --text \"описание\" --out ./SPEC.json"
+    );
+  }
+
+  return {
+    text,
+    inputPath,
+    outPath,
+    projectName
+  };
+}
+
 export async function scaffoldFromSpecFile(options: ScaffoldCliOptions): Promise<string> {
   const specPath = resolve(options.specPath);
   const outDir = resolve(options.outDir);
@@ -49,6 +77,19 @@ export async function scaffoldFromSpecFile(options: ScaffoldCliOptions): Promise
 
   await orchestrator.scaffoldProject(outDir, spec);
   return outDir;
+}
+
+export async function saveRequirementsSpec(options: RequirementsCliOptions): Promise<string> {
+  const text = options.text ?? await readFile(resolve(options.inputPath!), "utf8");
+  const spec = analyzeRequirements({
+    text,
+    projectName: options.projectName
+  });
+  const outPath = resolve(options.outPath);
+
+  await writeFile(outPath, `${JSON.stringify(spec, null, 2)}\n`, "utf8");
+
+  return outPath;
 }
 
 export async function validateProjectDirectory(
@@ -62,6 +103,12 @@ export async function validateProjectDirectory(
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
+
+  if (args[0] === "requirements") {
+    const outPath = await saveRequirementsSpec(parseRequirementsArgs(args.slice(1)));
+    console.log(`Спецификация сохранена: ${outPath}`);
+    return;
+  }
 
   if (args[0] === "validate") {
     const passed = await validateProjectDirectory(parseValidateArgs(args.slice(1)));

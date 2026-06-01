@@ -57,7 +57,14 @@ docker compose up --build
 
 ## Локальное создание проекта
 
-CLI принимает JSON-спецификацию, валидирует ее и создает проект из шаблона:
+Сначала можно превратить свободное текстовое описание в `SPEC.json`:
+
+```bash
+npm run requirements -- --text "Создай сервис учета книг. Пользователь должен зарегистрироваться, войти, добавлять книги и менять статус прочтения." --out ./generated-projects/book-tracker/SPEC.json
+```
+
+После этого CLI принимает JSON-спецификацию, валидирует ее и создает проект из
+шаблона:
 
 ```bash
 npm run scaffold -- --spec ./examples/book-tracker.spec.json --out ./generated-projects/book-tracker
