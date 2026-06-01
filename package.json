@@ -10,6 +10,7 @@
   ],
   "scripts": {
     "build": "npm run build -w @hephaestus/contracts && npm run build -w @hephaestus/hermes-adapter && npm run build -w @hephaestus/project-sandbox && npm run build -w @hephaestus/templates && npm run build -w @hephaestus/orchestrator",
+    "scaffold": "npm run build -w @hephaestus/contracts && npm run build -w @hephaestus/templates && npm run build -w @hephaestus/orchestrator && node apps/orchestrator/dist/cli.js",
     "test": "npm run build -w @hephaestus/contracts && npm run build -w @hephaestus/hermes-adapter && npm run build -w @hephaestus/project-sandbox && npm run build -w @hephaestus/templates && npm run test --workspaces --if-present",
     "typecheck": "npm run build -w @hephaestus/contracts && npm run build -w @hephaestus/hermes-adapter && npm run build -w @hephaestus/project-sandbox && npm run build -w @hephaestus/templates && npm run typecheck -w @hephaestus/orchestrator"
   },

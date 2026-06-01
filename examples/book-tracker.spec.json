@@ -1,0 +1,48 @@
+{
+  "projectName": "book-tracker",
+  "description": "Сервис учета личной библиотеки",
+  "actors": [
+    {
+      "name": "user",
+      "description": "Зарегистрированный пользователь, который ведет список своих книг"
+    }
+  ],
+  "features": [
+    {
+      "id": "auth",
+      "title": "Регистрация и вход",
+      "description": "Пользователь может зарегистрироваться и войти в систему",
+      "priority": "must"
+    },
+    {
+      "id": "books-crud",
+      "title": "Управление книгами",
+      "description": "Пользователь может добавлять, редактировать и удалять книги",
+      "priority": "must"
+    },
+    {
+      "id": "reading-status",
+      "title": "Статус прочтения",
+      "description": "Пользователь может менять статус книги: запланирована, читается, прочитана",
+      "priority": "must"
+    }
+  ],
+  "entities": [
+    {
+      "name": "Book",
+      "fields": ["title", "author", "genre", "readingStatus"],
+      "description": "Книга в личной библиотеке пользователя"
+    }
+  ],
+  "requiresAuth": true,
+  "requiresDatabase": true,
+  "constraints": [
+    "Данные разных пользователей не должны смешиваться",
+    "Проект должен запускаться через Docker Compose"
+  ],
+  "acceptanceCriteria": [
+    "Пользователь может зарегистрироваться и войти",
+    "Пользователь может управлять только своими книгами",
+    "Приложение запускается командой docker compose up --build"
+  ]
+}

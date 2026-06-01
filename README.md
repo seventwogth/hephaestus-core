@@ -1,34 +1,36 @@
 # hephaestus-core
 
-Local multi-agent pipeline for generating complete web application repositories.
+Локальный мультиагентный конвейер для генерации полноценных репозиториев
+веб-приложений.
 
-## MVP direction
+## Направление MVP
 
-Hephaestus accepts a product request, turns it into structured project artifacts,
-then runs specialized generation and validation stages. The first target is a
-reproducible local repository that can be started with Docker Compose.
+Hephaestus принимает описание продукта, преобразует его в структурированные
+артефакты проекта, а затем запускает специализированные этапы генерации и
+проверки. Первая цель — воспроизводимый локальный репозиторий, который можно
+запустить через Docker Compose.
 
-Generated applications use a fixed stack:
+Генерируемые приложения используют фиксированный стек:
 
 - Frontend: React, TypeScript, Vite
 - Backend: Go, chi
-- Database: PostgreSQL
+- База данных: PostgreSQL
 - API: REST/OpenAPI
-- Runtime: Docker Compose
+- Запуск: Docker Compose
 
-## Repository layout
+## Структура репозитория
 
 ```text
 apps/
-  orchestrator/          State machine and project artifact flow
+  orchestrator/          Конечный автомат и поток артефактов проекта
 packages/
-  contracts/             Zod schemas for SPEC, PLAN, TASKS, STATUS
-  hermes-adapter/         Model provider contract for agent runs
-  project-sandbox/       Safe project file and command execution
-  templates/             Fixed generated-app template and materializer
+  contracts/             Zod-схемы для SPEC, PLAN, TASKS, STATUS
+  hermes-adapter/         Контракт провайдера модели для запуска агентов
+  project-sandbox/       Безопасные файловые операции и запуск команд
+  templates/             Фиксированный шаблон и механизм создания проекта
 ```
 
-## Core commands
+## Команды ядра
 
 ```bash
 npm install
@@ -37,17 +39,28 @@ npm test
 npm run build
 ```
 
-The generated application template lives at:
+Шаблон генерируемого приложения находится здесь:
 
 ```text
 packages/templates/generated-webapp
 ```
 
-It should stay runnable with:
+Он должен оставаться запускаемым командой:
 
 ```bash
 docker compose up --build
 ```
 
-The orchestrator can now scaffold a project directory from this template and
-write the initial `SPEC.json`, `STATUS.json`, and `TASKS.json` artifacts.
+Оркестратор умеет создавать директорию проекта из этого шаблона и записывать
+начальные артефакты `SPEC.json`, `STATUS.json` и `TASKS.json`.
+
+## Локальное создание проекта
+
+CLI принимает JSON-спецификацию, валидирует ее и создает проект из шаблона:
+
+```bash
+npm run scaffold -- --spec ./examples/book-tracker.spec.json --out ./generated-projects/book-tracker
+```
+
+В MVP CLI ожидает спецификацию в формате `ProjectSpec` из пакета
+`@hephaestus/contracts`.

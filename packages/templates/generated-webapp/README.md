@@ -1,16 +1,16 @@
-# Generated Web App Template
+# Шаблон генерируемого веб-приложения
 
-This template is the fixed MVP target for Hephaestus-generated applications.
+Это фиксированная MVP-цель для приложений, которые генерирует Hephaestus.
 
-## Stack
+## Стек
 
 - Frontend: React, TypeScript, Vite
 - Backend: Go, chi
-- Database: PostgreSQL
+- База данных: PostgreSQL
 - API: REST
-- Runtime: Docker Compose
+- Запуск: Docker Compose
 
-## Commands
+## Команды
 
 ```bash
 docker compose up --build

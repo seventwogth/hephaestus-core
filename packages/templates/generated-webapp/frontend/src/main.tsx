@@ -7,11 +7,11 @@ function App() {
   return (
     <main className="app-shell">
       <section>
-        <p className="eyebrow">Hephaestus generated app</p>
-        <h1>Application scaffold is running</h1>
+        <p className="eyebrow">Приложение, созданное Hephaestus</p>
+        <h1>Каркас приложения запущен</h1>
         <p>
-          Agents will replace this starter screen with project-specific routes,
-          forms, and API integration. API base URL: {apiBaseUrl}.
+          Агенты заменят этот стартовый экран маршрутами, формами и интеграцией
+          с API для конкретного проекта. Базовый URL API: {apiBaseUrl}.
         </p>
       </section>
     </main>
