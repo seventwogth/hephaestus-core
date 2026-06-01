@@ -41,6 +41,39 @@ describe("Orchestrator", () => {
     }
   });
 
+  it("scaffolds the generated application template with project artifacts", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
+
+    try {
+      const orchestrator = new Orchestrator(new FileProjectStateStore());
+
+      await orchestrator.scaffoldProject(projectDir, {
+        projectName: "book-tracker",
+        description: "Track personal books",
+        actors: [{ name: "user" }],
+        features: [
+          {
+            id: "books-crud",
+            title: "Manage books",
+            description: "Create, update, and delete books",
+            priority: "must"
+          }
+        ],
+        entities: [],
+        requiresAuth: true,
+        requiresDatabase: true,
+        constraints: [],
+        acceptanceCriteria: ["User can manage only their own books"]
+      });
+
+      await expect(readFile(join(projectDir, "backend/go.mod"), "utf8")).resolves.toContain("module");
+      await expect(readFile(join(projectDir, "frontend/package.json"), "utf8")).resolves.toContain("vite");
+      await expect(readFile(join(projectDir, "SPEC.json"), "utf8")).resolves.toContain("book-tracker");
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it("runs an agent stage with scoped file context", async () => {
     const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
 

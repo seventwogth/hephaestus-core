@@ -2,6 +2,7 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type AgentRole, type AgentRunResult, type ModelProvider } from "@hephaestus/hermes-adapter";
 import { ProjectSandbox } from "@hephaestus/project-sandbox";
+import { materializeGeneratedWebApp } from "@hephaestus/templates";
 import {
   type ProjectPlan,
   type ProjectSpec,
@@ -79,6 +80,11 @@ export class Orchestrator {
     private readonly store: ProjectStateStore,
     private readonly modelProvider?: ModelProvider
   ) {}
+
+  async scaffoldProject(projectDir: string, spec: ProjectSpec): Promise<void> {
+    await materializeGeneratedWebApp({ targetDir: projectDir });
+    await this.initializeProject(projectDir, spec);
+  }
 
   async initializeProject(projectDir: string, spec: ProjectSpec): Promise<void> {
     await mkdir(projectDir, { recursive: true });

@@ -23,7 +23,9 @@ apps/
   orchestrator/          State machine and project artifact flow
 packages/
   contracts/             Zod schemas for SPEC, PLAN, TASKS, STATUS
-  templates/             Fixed generated-app template
+  hermes-adapter/         Model provider contract for agent runs
+  project-sandbox/       Safe project file and command execution
+  templates/             Fixed generated-app template and materializer
 ```
 
 ## Core commands
@@ -46,3 +48,6 @@ It should stay runnable with:
 ```bash
 docker compose up --build
 ```
+
+The orchestrator can now scaffold a project directory from this template and
+write the initial `SPEC.json`, `STATUS.json`, and `TASKS.json` artifacts.
