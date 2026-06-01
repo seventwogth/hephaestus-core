@@ -79,6 +79,12 @@ npm run scaffold -- --spec ./examples/book-tracker.spec.json --out ./generated-p
 npm run scaffold -- plan --spec ./generated-projects/book-tracker/SPEC.json --out ./generated-projects/book-tracker/PLAN.json
 ```
 
+После формирования плана можно сгенерировать Go backend-маршруты:
+
+```bash
+npm run scaffold -- generate-backend --project ./generated-projects/book-tracker
+```
+
 ## Проверка созданного проекта
 
 После создания проекта можно запустить проверочный этап:

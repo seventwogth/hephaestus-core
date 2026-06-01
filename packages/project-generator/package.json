@@ -1,0 +1,23 @@
+{
+  "name": "@hephaestus/project-generator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run --exclude 'dist/**'",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@hephaestus/agents": "file:../agents",
+    "@hephaestus/contracts": "file:../contracts",
+    "@hephaestus/project-sandbox": "file:../project-sandbox",
+    "@hephaestus/templates": "file:../templates"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.8"
+  }
+}

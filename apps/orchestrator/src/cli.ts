@@ -3,6 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { analyzeRequirements, createArchitecturePlan } from "@hephaestus/agents";
 import { projectSpecSchema } from "@hephaestus/contracts";
+import { generateGoBackend } from "@hephaestus/project-generator";
 import { type ValidationCheck, validateGeneratedWebApp } from "@hephaestus/project-validator";
 import { FileProjectStateStore, Orchestrator } from "./index.js";
 
@@ -25,6 +26,10 @@ export interface RequirementsCliOptions {
 export interface PlanCliOptions {
   specPath: string;
   outPath: string;
+}
+
+export interface GenerateBackendCliOptions {
+  projectDir: string;
 }
 
 export function parseScaffoldArgs(args: string[]): ScaffoldCliOptions {
@@ -84,6 +89,16 @@ export function parsePlanArgs(args: string[]): PlanCliOptions {
   return { specPath, outPath };
 }
 
+export function parseGenerateBackendArgs(args: string[]): GenerateBackendCliOptions {
+  const projectDir = readOption(args, "--project");
+
+  if (!projectDir) {
+    throw new Error("Использование: hephaestus-scaffold generate-backend --project ./generated-projects/my-app");
+  }
+
+  return { projectDir };
+}
+
 export async function scaffoldFromSpecFile(options: ScaffoldCliOptions): Promise<string> {
   const specPath = resolve(options.specPath);
   const outDir = resolve(options.outDir);
@@ -119,6 +134,15 @@ export async function saveArchitecturePlan(options: PlanCliOptions): Promise<str
   return outPath;
 }
 
+export async function generateBackendFromProject(options: GenerateBackendCliOptions): Promise<string[]> {
+  const projectDir = resolve(options.projectDir);
+  const rawPlan = await readFile(resolve(projectDir, "PLAN.json"), "utf8");
+  const plan = JSON.parse(rawPlan);
+  const files = await generateGoBackend({ projectDir, plan });
+
+  return files.map((file) => file.path);
+}
+
 export async function validateProjectDirectory(
   options: ValidateCliOptions,
   checks?: ValidationCheck[]
@@ -140,6 +164,12 @@ async function main(): Promise<void> {
   if (args[0] === "plan") {
     const outPath = await saveArchitecturePlan(parsePlanArgs(args.slice(1)));
     console.log(`Технический план сохранен: ${outPath}`);
+    return;
+  }
+
+  if (args[0] === "generate-backend") {
+    const files = await generateBackendFromProject(parseGenerateBackendArgs(args.slice(1)));
+    console.log(`Backend сгенерирован: ${files.join(", ")}`);
     return;
   }
 

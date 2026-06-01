@@ -158,6 +158,44 @@ describe("Orchestrator", () => {
     }
   });
 
+  it("generates Go backend from stored plan", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
+
+    try {
+      const orchestrator = new Orchestrator(new FileProjectStateStore());
+
+      await orchestrator.scaffoldProject(projectDir, {
+        projectName: "book-tracker",
+        description: "Track personal books",
+        actors: [{ name: "user" }],
+        features: [
+          {
+            id: "books-crud",
+            title: "Manage books",
+            description: "Create, update, and delete books",
+            priority: "must"
+          }
+        ],
+        entities: [{ name: "Book", fields: ["title", "author", "genre", "status"] }],
+        requiresAuth: true,
+        requiresDatabase: true,
+        constraints: [],
+        acceptanceCriteria: ["User can manage only their own books"]
+      });
+      await orchestrator.planProject(projectDir);
+      await orchestrator.generateBackendStage(projectDir);
+
+      const routes = await readFile(join(projectDir, "backend/internal/http/generated_routes.go"), "utf8");
+      const tasks = JSON.parse(await readFile(join(projectDir, "TASKS.json"), "utf8"));
+      const backendTask = tasks.tasks.find((task: { id: string }) => task.id === "backend");
+
+      expect(routes).toContain('router.Route("/books"');
+      expect(backendTask.status).toBe("done");
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it("moves project to READY after successful validation", async () => {
     const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
 

@@ -17,6 +17,7 @@
     "@hephaestus/agents": "file:../../packages/agents",
     "@hephaestus/contracts": "file:../../packages/contracts",
     "@hephaestus/hermes-adapter": "file:../../packages/hermes-adapter",
+    "@hephaestus/project-generator": "file:../../packages/project-generator",
     "@hephaestus/project-sandbox": "file:../../packages/project-sandbox",
     "@hephaestus/project-validator": "file:../../packages/project-validator",
     "@hephaestus/templates": "file:../../packages/templates",

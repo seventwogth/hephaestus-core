@@ -2,6 +2,7 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createArchitecturePlan } from "@hephaestus/agents";
 import { type AgentRole, type AgentRunResult, type ModelProvider } from "@hephaestus/hermes-adapter";
+import { generateGoBackend } from "@hephaestus/project-generator";
 import { ProjectSandbox } from "@hephaestus/project-sandbox";
 import {
   type ValidationCheck,
@@ -145,6 +146,16 @@ export class Orchestrator {
     await this.updateTaskStatus(projectDir, "architecture", "done");
 
     return plan;
+  }
+
+  async generateBackendStage(projectDir: string): Promise<void> {
+    const plan = await this.store.readPlan(projectDir);
+    if (!plan) {
+      throw new Error("PLAN.json не найден");
+    }
+
+    await generateGoBackend({ projectDir, plan });
+    await this.updateTaskStatus(projectDir, "backend", "done");
   }
 
   async runAgentStage(projectDir: string, input: AgentStageInput): Promise<AgentRunResult> {
