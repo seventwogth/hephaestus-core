@@ -2,11 +2,16 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { projectSpecSchema } from "@hephaestus/contracts";
+import { type ValidationCheck, validateGeneratedWebApp } from "@hephaestus/project-validator";
 import { FileProjectStateStore, Orchestrator } from "./index.js";
 
 export interface ScaffoldCliOptions {
   specPath: string;
   outDir: string;
+}
+
+export interface ValidateCliOptions {
+  projectDir: string;
 }
 
 export function parseScaffoldArgs(args: string[]): ScaffoldCliOptions {
@@ -25,6 +30,16 @@ export function parseScaffoldArgs(args: string[]): ScaffoldCliOptions {
   };
 }
 
+export function parseValidateArgs(args: string[]): ValidateCliOptions {
+  const projectDir = readOption(args, "--project");
+
+  if (!projectDir) {
+    throw new Error("Использование: hephaestus-scaffold validate --project ./generated-projects/my-app");
+  }
+
+  return { projectDir };
+}
+
 export async function scaffoldFromSpecFile(options: ScaffoldCliOptions): Promise<string> {
   const specPath = resolve(options.specPath);
   const outDir = resolve(options.outDir);
@@ -36,8 +51,26 @@ export async function scaffoldFromSpecFile(options: ScaffoldCliOptions): Promise
   return outDir;
 }
 
+export async function validateProjectDirectory(
+  options: ValidateCliOptions,
+  checks?: ValidationCheck[]
+): Promise<boolean> {
+  const projectDir = resolve(options.projectDir);
+  const report = await validateGeneratedWebApp({ projectDir, checks });
+  return report.passed;
+}
+
 async function main(): Promise<void> {
-  const options = parseScaffoldArgs(process.argv.slice(2));
+  const args = process.argv.slice(2);
+
+  if (args[0] === "validate") {
+    const passed = await validateProjectDirectory(parseValidateArgs(args.slice(1)));
+    console.log(passed ? "Проверка проекта успешна" : "Проверка проекта завершилась ошибкой");
+    process.exitCode = passed ? 0 : 1;
+    return;
+  }
+
+  const options = parseScaffoldArgs(args);
   const outDir = await scaffoldFromSpecFile(options);
   console.log(`Проект создан: ${outDir}`);
 }

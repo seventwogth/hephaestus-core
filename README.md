@@ -27,6 +27,7 @@ packages/
   contracts/             Zod-схемы для SPEC, PLAN, TASKS, STATUS
   hermes-adapter/         Контракт провайдера модели для запуска агентов
   project-sandbox/       Безопасные файловые операции и запуск команд
+  project-validator/     Проверки сгенерированного проекта и REVIEW.md
   templates/             Фиксированный шаблон и механизм создания проекта
 ```
 
@@ -64,3 +65,21 @@ npm run scaffold -- --spec ./examples/book-tracker.spec.json --out ./generated-p
 
 В MVP CLI ожидает спецификацию в формате `ProjectSpec` из пакета
 `@hephaestus/contracts`.
+
+## Проверка созданного проекта
+
+После создания проекта можно запустить проверочный этап:
+
+```bash
+npm run validate-project -- --project ./generated-projects/book-tracker
+```
+
+Валидатор выполняет базовые проверки Docker Compose, Go backend и frontend, а
+результат сохраняет в `REVIEW.md` внутри директории проекта.
+
+На первом запуске проверка frontend может потребовать доступ к npm registry,
+потому что валидатор устанавливает зависимости в созданном проекте.
+
+## Статус реализации
+
+Сопоставление текущего состояния с `IDEA.md` ведется в `docs/STATUS.md`.
