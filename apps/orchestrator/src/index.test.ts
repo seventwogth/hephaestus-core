@@ -118,4 +118,103 @@ describe("Orchestrator", () => {
       await rm(projectDir, { recursive: true, force: true });
     }
   });
+
+  it("moves project to READY after successful validation", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
+
+    try {
+      const orchestrator = new Orchestrator(new FileProjectStateStore());
+
+      await orchestrator.initializeProject(projectDir, {
+        projectName: "book-tracker",
+        description: "Track personal books",
+        actors: [{ name: "user" }],
+        features: [
+          {
+            id: "books-crud",
+            title: "Manage books",
+            description: "Create, update, and delete books",
+            priority: "must"
+          }
+        ],
+        entities: [],
+        requiresAuth: true,
+        requiresDatabase: true,
+        constraints: [],
+        acceptanceCriteria: ["User can manage only their own books"]
+      });
+
+      const report = await orchestrator.validateProjectStage(projectDir, {
+        checks: [
+          {
+            id: "npm-version",
+            title: "Проверка npm",
+            command: "npm",
+            args: ["--version"],
+            cwd: ".",
+            required: true
+          }
+        ]
+      });
+      const status = JSON.parse(await readFile(join(projectDir, "STATUS.json"), "utf8"));
+      const tasks = JSON.parse(await readFile(join(projectDir, "TASKS.json"), "utf8"));
+      const testingTask = tasks.tasks.find((task: { id: string }) => task.id === "testing");
+
+      expect(report.passed).toBe(true);
+      expect(status.stage).toBe("READY");
+      expect(testingTask.status).toBe("done");
+      await expect(readFile(join(projectDir, "REVIEW.md"), "utf8")).resolves.toContain("Отчет проверки");
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("moves project to FAILED after unsuccessful validation", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
+
+    try {
+      const orchestrator = new Orchestrator(new FileProjectStateStore());
+
+      await orchestrator.initializeProject(projectDir, {
+        projectName: "book-tracker",
+        description: "Track personal books",
+        actors: [{ name: "user" }],
+        features: [
+          {
+            id: "books-crud",
+            title: "Manage books",
+            description: "Create, update, and delete books",
+            priority: "must"
+          }
+        ],
+        entities: [],
+        requiresAuth: true,
+        requiresDatabase: true,
+        constraints: [],
+        acceptanceCriteria: ["User can manage only their own books"]
+      });
+
+      const report = await orchestrator.validateProjectStage(projectDir, {
+        checks: [
+          {
+            id: "missing-script",
+            title: "Отсутствующий npm-скрипт",
+            command: "npm",
+            args: ["run", "missing"],
+            cwd: ".",
+            required: true
+          }
+        ]
+      });
+      const status = JSON.parse(await readFile(join(projectDir, "STATUS.json"), "utf8"));
+      const tasks = JSON.parse(await readFile(join(projectDir, "TASKS.json"), "utf8"));
+      const testingTask = tasks.tasks.find((task: { id: string }) => task.id === "testing");
+
+      expect(report.passed).toBe(false);
+      expect(status.stage).toBe("FAILED");
+      expect(testingTask.status).toBe("failed");
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
 });

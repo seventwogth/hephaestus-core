@@ -2,6 +2,11 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type AgentRole, type AgentRunResult, type ModelProvider } from "@hephaestus/hermes-adapter";
 import { ProjectSandbox } from "@hephaestus/project-sandbox";
+import {
+  type ValidationCheck,
+  type ValidationReport,
+  validateGeneratedWebApp
+} from "@hephaestus/project-validator";
 import { materializeGeneratedWebApp } from "@hephaestus/templates";
 import {
   type ProjectPlan,
@@ -33,6 +38,7 @@ export interface ProjectStateStore {
   writePlan(projectDir: string, plan: ProjectPlan): Promise<void>;
   readStatus(projectDir: string): Promise<ProjectStatus | null>;
   writeStatus(projectDir: string, status: ProjectStatus): Promise<void>;
+  readTasks(projectDir: string): Promise<ProjectTask[] | null>;
   writeTasks(projectDir: string, tasks: ProjectTask[]): Promise<void>;
 }
 
@@ -42,6 +48,11 @@ export interface AgentStageInput {
   contextFiles: string[];
   writableFiles: string[];
   validationCommand?: string;
+}
+
+export interface ValidateProjectStageOptions {
+  checks?: ValidationCheck[];
+  timeoutMs?: number;
 }
 
 export class FileProjectStateStore implements ProjectStateStore {
@@ -67,6 +78,21 @@ export class FileProjectStateStore implements ProjectStateStore {
 
   async writeStatus(projectDir: string, status: ProjectStatus): Promise<void> {
     await writeJson(join(projectDir, "STATUS.json"), projectStatusSchema.parse(status));
+  }
+
+  async readTasks(projectDir: string): Promise<ProjectTask[] | null> {
+    const taskFile = await readJson(
+      join(projectDir, "TASKS.json"),
+      {
+        parse(value: unknown) {
+          return {
+            tasks: (value as { tasks?: unknown[] }).tasks?.map((task) => taskSchema.parse(task)) ?? []
+          };
+        }
+      }
+    );
+
+    return taskFile?.tasks ?? null;
   }
 
   async writeTasks(projectDir: string, tasks: ProjectTask[]): Promise<void> {
@@ -135,6 +161,41 @@ export class Orchestrator {
     );
 
     return result;
+  }
+
+  async validateProjectStage(
+    projectDir: string,
+    options: ValidateProjectStageOptions = {}
+  ): Promise<ValidationReport> {
+    await this.store.writeStatus(projectDir, newStatus("TESTING"));
+    await this.updateTaskStatus(projectDir, "testing", "in_progress");
+
+    const report = await validateGeneratedWebApp({
+      projectDir,
+      checks: options.checks,
+      timeoutMs: options.timeoutMs
+    });
+
+    await this.updateTaskStatus(projectDir, "testing", report.passed ? "done" : "failed");
+    await this.store.writeStatus(projectDir, newStatus(report.passed ? "READY" : "FAILED"));
+
+    return report;
+  }
+
+  private async updateTaskStatus(
+    projectDir: string,
+    taskId: string,
+    status: ProjectTask["status"]
+  ): Promise<void> {
+    const tasks = await this.store.readTasks(projectDir);
+    if (!tasks) {
+      return;
+    }
+
+    await this.store.writeTasks(
+      projectDir,
+      tasks.map((task) => (task.id === taskId ? { ...task, status } : task))
+    );
   }
 }
 
