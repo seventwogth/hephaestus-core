@@ -1,0 +1,23 @@
+{
+  "name": "@hephaestus/orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run --exclude 'dist/**'",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@hephaestus/contracts": "file:../../packages/contracts",
+    "@hephaestus/hermes-adapter": "file:../../packages/hermes-adapter",
+    "@hephaestus/project-sandbox": "file:../../packages/project-sandbox",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.8"
+  }
+}

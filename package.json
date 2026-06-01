@@ -1,0 +1,21 @@
+{
+  "name": "hephaestus-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.4",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @hephaestus/contracts && npm run build -w @hephaestus/hermes-adapter && npm run build -w @hephaestus/project-sandbox && npm run build -w @hephaestus/templates && npm run build -w @hephaestus/orchestrator",
+    "test": "npm run build -w @hephaestus/contracts && npm run build -w @hephaestus/hermes-adapter && npm run build -w @hephaestus/project-sandbox && npm run test --workspaces --if-present",
+    "typecheck": "npm run build -w @hephaestus/contracts && npm run build -w @hephaestus/hermes-adapter && npm run build -w @hephaestus/project-sandbox && npm run typecheck -w @hephaestus/templates && npm run typecheck -w @hephaestus/orchestrator"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.8"
+  }
+}
