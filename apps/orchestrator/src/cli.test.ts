@@ -7,8 +7,10 @@ import {
   parseRequirementsArgs,
   parsePlanArgs,
   parseGenerateBackendArgs,
+  parseGenerateFrontendArgs,
   parseValidateArgs,
   generateBackendFromProject,
+  generateFrontendFromProject,
   saveArchitecturePlan,
   saveRequirementsSpec,
   scaffoldFromSpecFile,
@@ -51,6 +53,12 @@ describe("scaffold CLI", () => {
 
   it("parses backend generation arguments", () => {
     expect(parseGenerateBackendArgs(["--project", "app"])).toEqual({
+      projectDir: "app"
+    });
+  });
+
+  it("parses frontend generation arguments", () => {
+    expect(parseGenerateFrontendArgs(["--project", "app"])).toEqual({
       projectDir: "app"
     });
   });
@@ -117,6 +125,31 @@ describe("scaffold CLI", () => {
 
       expect(files).toContain("backend/internal/http/generated_routes.go");
       await expect(readFile(join(outDir, "backend/internal/http/generated_routes.go"), "utf8")).resolves.toContain("/books");
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("generates frontend files for a scaffolded project", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "hephaestus-cli-"));
+    const specPath = join(rootDir, "SPEC.json");
+    const outDir = join(rootDir, "book-tracker");
+
+    try {
+      await saveRequirementsSpec({
+        text: "Создай сервис учета книг. Пользователь должен зарегистрироваться, войти и добавлять книги.",
+        outPath: specPath
+      });
+      await scaffoldFromSpecFile({ specPath, outDir });
+      await saveArchitecturePlan({
+        specPath: join(outDir, "SPEC.json"),
+        outPath: join(outDir, "PLAN.json")
+      });
+
+      const files = await generateFrontendFromProject({ projectDir: outDir });
+
+      expect(files).toContain("frontend/src/api.ts");
+      await expect(readFile(join(outDir, "frontend/src/main.tsx"), "utf8")).resolves.toContain("Учет книг");
     } finally {
       await rm(rootDir, { recursive: true, force: true });
     }

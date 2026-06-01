@@ -196,6 +196,44 @@ describe("Orchestrator", () => {
     }
   });
 
+  it("generates React frontend from stored plan", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
+
+    try {
+      const orchestrator = new Orchestrator(new FileProjectStateStore());
+
+      await orchestrator.scaffoldProject(projectDir, {
+        projectName: "book-tracker",
+        description: "Track personal books",
+        actors: [{ name: "user" }],
+        features: [
+          {
+            id: "books-crud",
+            title: "Manage books",
+            description: "Create, update, and delete books",
+            priority: "must"
+          }
+        ],
+        entities: [{ name: "Book", fields: ["title", "author", "genre", "status"] }],
+        requiresAuth: true,
+        requiresDatabase: true,
+        constraints: [],
+        acceptanceCriteria: ["User can manage only their own books"]
+      });
+      await orchestrator.planProject(projectDir);
+      await orchestrator.generateFrontendStage(projectDir);
+
+      const main = await readFile(join(projectDir, "frontend/src/main.tsx"), "utf8");
+      const tasks = JSON.parse(await readFile(join(projectDir, "TASKS.json"), "utf8"));
+      const frontendTask = tasks.tasks.find((task: { id: string }) => task.id === "frontend");
+
+      expect(main).toContain("Учет книг");
+      expect(frontendTask.status).toBe("done");
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it("moves project to READY after successful validation", async () => {
     const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
 

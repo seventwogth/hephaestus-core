@@ -3,7 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { analyzeRequirements, createArchitecturePlan } from "@hephaestus/agents";
 import { projectSpecSchema } from "@hephaestus/contracts";
-import { generateGoBackend } from "@hephaestus/project-generator";
+import { generateGoBackend, generateReactFrontend } from "@hephaestus/project-generator";
 import { type ValidationCheck, validateGeneratedWebApp } from "@hephaestus/project-validator";
 import { FileProjectStateStore, Orchestrator } from "./index.js";
 
@@ -29,6 +29,10 @@ export interface PlanCliOptions {
 }
 
 export interface GenerateBackendCliOptions {
+  projectDir: string;
+}
+
+export interface GenerateFrontendCliOptions {
   projectDir: string;
 }
 
@@ -99,6 +103,16 @@ export function parseGenerateBackendArgs(args: string[]): GenerateBackendCliOpti
   return { projectDir };
 }
 
+export function parseGenerateFrontendArgs(args: string[]): GenerateFrontendCliOptions {
+  const projectDir = readOption(args, "--project");
+
+  if (!projectDir) {
+    throw new Error("Использование: hephaestus-scaffold generate-frontend --project ./generated-projects/my-app");
+  }
+
+  return { projectDir };
+}
+
 export async function scaffoldFromSpecFile(options: ScaffoldCliOptions): Promise<string> {
   const specPath = resolve(options.specPath);
   const outDir = resolve(options.outDir);
@@ -143,6 +157,15 @@ export async function generateBackendFromProject(options: GenerateBackendCliOpti
   return files.map((file) => file.path);
 }
 
+export async function generateFrontendFromProject(options: GenerateFrontendCliOptions): Promise<string[]> {
+  const projectDir = resolve(options.projectDir);
+  const rawPlan = await readFile(resolve(projectDir, "PLAN.json"), "utf8");
+  const plan = JSON.parse(rawPlan);
+  const files = await generateReactFrontend({ projectDir, plan });
+
+  return files.map((file) => file.path);
+}
+
 export async function validateProjectDirectory(
   options: ValidateCliOptions,
   checks?: ValidationCheck[]
@@ -170,6 +193,12 @@ async function main(): Promise<void> {
   if (args[0] === "generate-backend") {
     const files = await generateBackendFromProject(parseGenerateBackendArgs(args.slice(1)));
     console.log(`Backend сгенерирован: ${files.join(", ")}`);
+    return;
+  }
+
+  if (args[0] === "generate-frontend") {
+    const files = await generateFrontendFromProject(parseGenerateFrontendArgs(args.slice(1)));
+    console.log(`Frontend сгенерирован: ${files.join(", ")}`);
     return;
   }
 

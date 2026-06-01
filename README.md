@@ -85,6 +85,12 @@ npm run scaffold -- plan --spec ./generated-projects/book-tracker/SPEC.json --ou
 npm run scaffold -- generate-backend --project ./generated-projects/book-tracker
 ```
 
+Затем можно сгенерировать frontend-страницу и API-клиент:
+
+```bash
+npm run scaffold -- generate-frontend --project ./generated-projects/book-tracker
+```
+
 ## Проверка созданного проекта
 
 После создания проекта можно запустить проверочный этап:
