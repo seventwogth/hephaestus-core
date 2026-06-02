@@ -151,6 +151,18 @@ TELEGRAM_BOT_TOKEN=... npm run telegram-bot
 После выбора модели бот сохраняет её в `MODEL_SELECTION.json` внутри созданного
 проекта, чтобы последующие этапы могли использовать этот контекст.
 
+## ModelProvider
+
+Пакет `@hephaestus/hermes-adapter` теперь поддерживает два режима:
+
+- `StubModelProvider` для детерминированных тестов;
+- `CommandModelProvider` для подключения внешнего модельного рантайма через JSON
+  по `stdin/stdout`.
+
+Контракт простой: внешний процесс получает `AgentRunInput` в `stdin` и должен
+вернуть JSON с полями `summary`, `changedFiles`, `updatedFiles` и `rawOutput`.
+`updatedFiles` затем применяются оркестратором только в разрешённые пути этапа.
+
 ## Статус реализации
 
 Сопоставление текущего состояния с `IDEA.md` ведется в `docs/STATUS.md`.
