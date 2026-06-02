@@ -67,6 +67,31 @@ cd hephaestus-core
 npm install
 ```
 
+Ускоренный вариант:
+
+```bash
+sh ./setup.sh
+```
+
+Или:
+
+```bash
+npm run setup-host
+```
+
+`setup.sh` делает следующее:
+
+- проверяет базовые зависимости хост-машины
+- пытается установить недостающие пакеты через доступный пакетный менеджер
+- запускает `npm install`
+- предлагает выбрать директории, модель и режим запуска
+- просит токен Telegram-бота и пишет `.env.hephaestus`
+- при желании делает `ollama pull` для выбранной модели
+
+Важно: создание Telegram-бота полностью автоматизировать нельзя, потому что у
+`@BotFather` нет публичного API для этого. Скрипт проводит пользователя через
+этот шаг и просит вставить уже выданный токен.
+
 ### 3. Поднять Ollama и скачать модель
 
 Запустить Ollama:
@@ -111,12 +136,22 @@ export HEPHAESTUS_AVAILABLE_MODELS="qwen2.5-coder:7b|Qwen 7B|Быстрее,qwen
 npm run telegram-bot
 ```
 
+Раздельный запуск сервисов:
+
+```bash
+npm run telegram-bot-poll
+npm run telegram-bot-worker
+```
+
 Бот начнёт:
 
 - принимать команды из Telegram
 - сохранять сессии на диск
 - ставить проекты в persistent queue
 - после рестарта продолжать обрабатывать pending jobs
+
+В production-сценарии предпочтительно держать `poll` и `worker` как отдельные
+фоновые процессы на одной хост-машине.
 
 ### 7. Создать первый проект через Telegram
 
@@ -289,8 +324,10 @@ TELEGRAM_BOT_TOKEN=... npm run telegram-bot
 - `HEPHAESTUS_BOT_STATE_DIR` — директория для session store, queue store и polling offset
 - `HEPHAESTUS_AVAILABLE_MODELS` — список моделей в формате `id|label|description,id2|label2|description2`
 - `HEPHAESTUS_MODEL_RUNTIME_MAP` — необязательное сопоставление `modelId=stub` или `modelId=ollama:model-name`
+- `HEPHAESTUS_BOT_MODE` — режим `all`, `poll` или `worker`
 - `HEPHAESTUS_OLLAMA_BASE_URL` — URL локального Ollama API, по умолчанию `http://127.0.0.1:11434`
 - `HEPHAESTUS_OLLAMA_TIMEOUT_MS` — таймаут одного agent run для Ollama
+- `HEPHAESTUS_JOB_POLL_INTERVAL_MS` — интервал опроса очереди worker в миллисекундах
 
 После выбора модели бот сохраняет её в `MODEL_SELECTION.json` внутри созданного
 проекта и, если модель не `stub`, поднимает для неё реальный provider.
@@ -309,6 +346,12 @@ TELEGRAM_BOT_TOKEN=... npm run telegram-bot
 6. валидация и fixer loop выполняются локально на хосте
 7. все agent runs журналируются в `AGENT_RUNS.jsonl`
 8. бот присылает финальный статус и путь к проекту
+
+Доступные локальные команды запуска:
+
+- `npm run telegram-bot` — combined mode, один процесс для `poll + worker`
+- `npm run telegram-bot-poll` — только Telegram polling UI
+- `npm run telegram-bot-worker` — только queue worker
 
 Доступные команды в Telegram:
 

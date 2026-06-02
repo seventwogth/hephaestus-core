@@ -613,6 +613,13 @@ export class TelegramPollingRuntime {
 
     return nextOffset;
   }
+
+  async runForever(initialOffset?: number): Promise<never> {
+    let offset = initialOffset;
+    while (true) {
+      offset = await this.runOnce(offset);
+    }
+  }
 }
 
 export class ProjectJobRunner {
@@ -668,6 +675,28 @@ export class ProjectJobRunner {
       );
 
       return failedJob;
+    }
+  }
+}
+
+export class TelegramWorkerRuntime {
+  constructor(
+    private readonly runner: ProjectJobRunner,
+    private readonly idleDelayMs = 3_000
+  ) {}
+
+  async runOnce(): Promise<ProjectJob | null> {
+    return this.runner.runNext();
+  }
+
+  async runForever(): Promise<never> {
+    while (true) {
+      const job = await this.runOnce();
+      if (job) {
+        continue;
+      }
+
+      await sleep(this.idleDelayMs);
     }
   }
 }
@@ -846,4 +875,10 @@ async function readJsonFile<T>(path: string, fallback: T): Promise<T> {
 async function writeJsonFile(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function sleep(timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, timeoutMs);
+  });
 }
