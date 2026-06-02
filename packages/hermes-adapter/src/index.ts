@@ -26,6 +26,7 @@ export interface AgentRunResult {
   role: AgentRole;
   summary: string;
   changedFiles: string[];
+  updatedFiles: AgentFileContext[];
   rawOutput: string;
 }
 
@@ -39,6 +40,7 @@ export class StubModelProvider implements ModelProvider {
       role: input.role,
       summary: `Stubbed ${input.role} run`,
       changedFiles: [],
+      updatedFiles: [],
       rawOutput: JSON.stringify({
         role: input.role,
         filesReceived: input.files.map((file) => file.path),

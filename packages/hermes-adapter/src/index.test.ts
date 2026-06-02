@@ -14,6 +14,7 @@ describe("StubModelProvider", () => {
 
     expect(result.role).toBe("architect");
     expect(result.summary).toContain("architect");
+    expect(result.updatedFiles).toEqual([]);
     expect(result.rawOutput).toContain("SPEC.json");
   });
 });

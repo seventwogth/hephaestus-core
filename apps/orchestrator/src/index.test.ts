@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { StubModelProvider } from "@hephaestus/hermes-adapter";
+import { StubModelProvider, type ModelProvider } from "@hephaestus/hermes-adapter";
 import { FileProjectStateStore, Orchestrator } from "./index.js";
 
 describe("Orchestrator", () => {
@@ -35,7 +35,7 @@ describe("Orchestrator", () => {
       const tasks = JSON.parse(await readFile(join(projectDir, "TASKS.json"), "utf8"));
 
       expect(status.stage).toBe("SPEC_APPROVAL");
-      expect(tasks.tasks).toHaveLength(8);
+      expect(tasks.tasks).toHaveLength(9);
     } finally {
       await rm(projectDir, { recursive: true, force: true });
     }
@@ -114,6 +114,60 @@ describe("Orchestrator", () => {
 
       expect(result.summary).toContain("architect");
       expect(log).toContain("SPEC.json");
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies file updates returned by the model provider", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
+    const provider: ModelProvider = {
+      async generate(input) {
+        return {
+          role: input.role,
+          summary: "Updated plan",
+          changedFiles: ["PLAN.json"],
+          updatedFiles: [
+            {
+              path: "PLAN.json",
+              content: "{\"projectName\":\"updated\"}\n"
+            }
+          ],
+          rawOutput: "ok"
+        };
+      }
+    };
+
+    try {
+      const orchestrator = new Orchestrator(new FileProjectStateStore(), provider);
+
+      await orchestrator.initializeProject(projectDir, {
+        projectName: "book-tracker",
+        description: "Track personal books",
+        actors: [{ name: "user" }],
+        features: [
+          {
+            id: "books-crud",
+            title: "Manage books",
+            description: "Create, update, and delete books",
+            priority: "must"
+          }
+        ],
+        entities: [],
+        requiresAuth: true,
+        requiresDatabase: true,
+        constraints: [],
+        acceptanceCriteria: ["User can manage only their own books"]
+      });
+
+      await orchestrator.runAgentStage(projectDir, {
+        role: "architect",
+        instruction: "Update plan",
+        contextFiles: ["SPEC.json"],
+        writableFiles: ["PLAN.json"]
+      });
+
+      await expect(readFile(join(projectDir, "PLAN.json"), "utf8")).resolves.toContain("updated");
     } finally {
       await rm(projectDir, { recursive: true, force: true });
     }
@@ -337,4 +391,148 @@ describe("Orchestrator", () => {
       await rm(projectDir, { recursive: true, force: true });
     }
   });
+
+  it("runs a limited fixer loop and reaches READY after applying a fix", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
+    let fixApplied = false;
+    const provider: ModelProvider = {
+      async generate(input) {
+        if (input.role !== "fixer") {
+          throw new Error("unexpected role");
+        }
+
+        fixApplied = true;
+        return {
+          role: "fixer",
+          summary: "Applied fix from REVIEW.md",
+          changedFiles: ["package.json"],
+          updatedFiles: [
+            {
+              path: "package.json",
+              content: JSON.stringify({
+                scripts: {
+                  pass: "node -e \"process.exit(0)\""
+                }
+              }, null, 2)
+            }
+          ],
+          rawOutput: "fixed"
+        };
+      }
+    };
+
+    try {
+      const orchestrator = new Orchestrator(new FileProjectStateStore(), provider);
+
+      await orchestrator.initializeProject(projectDir, {
+        projectName: "book-tracker",
+        description: "Track personal books",
+        actors: [{ name: "user" }],
+        features: [
+          {
+            id: "books-crud",
+            title: "Manage books",
+            description: "Create, update, and delete books",
+            priority: "must"
+          }
+        ],
+        entities: [],
+        requiresAuth: true,
+        requiresDatabase: true,
+        constraints: [],
+        acceptanceCriteria: ["User can manage only their own books"]
+      });
+
+      const report = await orchestrator.fixProjectStage(projectDir, {
+        maxAttempts: 2,
+        checks: [
+          {
+            id: "pass-script",
+            title: "Исправляемый npm-скрипт",
+            command: "npm",
+            args: ["run", "pass"],
+            cwd: ".",
+            required: true
+          }
+        ],
+        writableFiles: ["package.json"]
+      });
+
+      const status = JSON.parse(await readFile(join(projectDir, "STATUS.json"), "utf8"));
+      const tasks = JSON.parse(await readFile(join(projectDir, "TASKS.json"), "utf8"));
+      const fixingTask = tasks.tasks.find((task: { id: string }) => task.id === "fixing");
+
+      expect(report.passed).toBe(true);
+      expect(fixApplied).toBe(true);
+      expect(status.stage).toBe("READY");
+      expect(status.attempts.fixing).toBe(2);
+      expect(fixingTask.status).toBe("done");
+      await expect(readFile(join(projectDir, "REVIEW.md"), "utf8")).resolves.toContain("успешно");
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it("stops fixer loop after max attempts and leaves project FAILED", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
+    const provider: ModelProvider = {
+      async generate() {
+        return {
+          role: "fixer",
+          summary: "No changes",
+          changedFiles: [],
+          updatedFiles: [],
+          rawOutput: "noop"
+        };
+      }
+    };
+
+    try {
+      const orchestrator = new Orchestrator(new FileProjectStateStore(), provider);
+
+      await orchestrator.initializeProject(projectDir, {
+        projectName: "book-tracker",
+        description: "Track personal books",
+        actors: [{ name: "user" }],
+        features: [
+          {
+            id: "books-crud",
+            title: "Manage books",
+            description: "Create, update, and delete books",
+            priority: "must"
+          }
+        ],
+        entities: [],
+        requiresAuth: true,
+        requiresDatabase: true,
+        constraints: [],
+        acceptanceCriteria: ["User can manage only their own books"]
+      });
+
+      const report = await orchestrator.fixProjectStage(projectDir, {
+        maxAttempts: 2,
+        checks: [
+          {
+            id: "still-failing",
+            title: "Постоянно падающая проверка",
+            command: "npm",
+            args: ["run", "missing"],
+            cwd: ".",
+            required: true
+          }
+        ]
+      });
+
+      const status = JSON.parse(await readFile(join(projectDir, "STATUS.json"), "utf8"));
+      const tasks = JSON.parse(await readFile(join(projectDir, "TASKS.json"), "utf8"));
+      const fixingTask = tasks.tasks.find((task: { id: string }) => task.id === "fixing");
+
+      expect(report.passed).toBe(false);
+      expect(status.stage).toBe("FAILED");
+      expect(status.attempts.fixing).toBe(2);
+      expect(fixingTask.status).toBe("failed");
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  }, 120_000);
 });
