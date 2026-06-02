@@ -2,11 +2,15 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { analyzeRequirements } from "@hephaestus/agents";
 import {
+  createLocalModelProvider,
   type ModelProvider,
-  OllamaModelProvider,
-  StubModelProvider
+  resolveLocalModelRuntime
 } from "@hephaestus/hermes-adapter";
-import { FileProjectStateStore, Orchestrator } from "@hephaestus/orchestrator";
+import {
+  type BootstrapProjectOptions,
+  FileProjectStateStore,
+  Orchestrator
+} from "@hephaestus/orchestrator";
 
 export interface ModelOption {
   id: string;
@@ -102,6 +106,7 @@ export interface ProjectBootstrapper {
 export interface LocalProjectBootstrapperOptions {
   outputRoot: string;
   createModelProvider?: (selectedModel: ModelOption) => ModelProvider;
+  bootstrapOptions?: BootstrapProjectOptions;
 }
 
 export class LocalProjectBootstrapper implements ProjectBootstrapper {
@@ -116,9 +121,14 @@ export class LocalProjectBootstrapper implements ProjectBootstrapper {
       `${speculativeSpec.projectName}-${timestampLabel(new Date())}`
     );
     const orchestrator = new Orchestrator(new FileProjectStateStore(), provider);
-    const spec = provider
-      ? await orchestrator.bootstrapProjectFromPrompt(projectDir, input.description)
+    const result = provider
+      ? await orchestrator.bootstrapProjectFromPrompt(
+          projectDir,
+          input.description,
+          this.options.bootstrapOptions
+        )
       : await bootstrapDeterministicProject(orchestrator, projectDir, input.description);
+    const spec = "spec" in result ? result.spec : result;
 
     await writeFile(
       join(projectDir, "MODEL_SELECTION.json"),
@@ -412,17 +422,7 @@ export function createModelProviderForOption(
   model: ModelOption,
   env: Record<string, string | undefined> = process.env
 ): ModelProvider {
-  const runtime = resolveModelRuntime(model, env);
-
-  if (runtime.provider === "stub") {
-    return new StubModelProvider();
-  }
-
-  return new OllamaModelProvider({
-    model: runtime.target,
-    baseUrl: env.HEPHAESTUS_OLLAMA_BASE_URL,
-    timeoutMs: parseOptionalNumber(env.HEPHAESTUS_OLLAMA_TIMEOUT_MS)
-  });
+  return createLocalModelProvider(model.id, env);
 }
 
 export async function readSelectedModel(projectDir: string): Promise<ModelOption | null> {
@@ -453,21 +453,7 @@ function resolveModelRuntime(
   model: ModelOption,
   env: Record<string, string | undefined> = process.env
 ): { provider: "stub" | "ollama"; target: string } {
-  const mappedRuntime = parseRuntimeMap(env.HEPHAESTUS_MODEL_RUNTIME_MAP)[model.id];
-  const runtimeSpec = mappedRuntime ?? (model.id === "stub" ? "stub" : `ollama:${model.id}`);
-
-  if (runtimeSpec === "stub") {
-    return { provider: "stub", target: "stub" };
-  }
-
-  if (runtimeSpec.startsWith("ollama:")) {
-    return {
-      provider: "ollama",
-      target: runtimeSpec.slice("ollama:".length)
-    };
-  }
-
-  throw new Error(`Unsupported runtime for model ${model.id}: ${runtimeSpec}`);
+  return resolveLocalModelRuntime(model.id, env);
 }
 
 function requireModel(models: ModelOption[], modelId: string): ModelOption {
@@ -523,43 +509,4 @@ async function bootstrapDeterministicProject(
   await orchestrator.generateBackendStage(projectDir);
   await orchestrator.generateFrontendStage(projectDir);
   return spec;
-}
-
-function parseRuntimeMap(rawValue: string | undefined): Record<string, string> {
-  if (!rawValue) {
-    return {};
-  }
-
-  return rawValue
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-    .reduce<Record<string, string>>((accumulator, entry) => {
-      const separatorIndex = entry.indexOf("=");
-      if (separatorIndex === -1) {
-        throw new Error(`Invalid model runtime entry: ${entry}`);
-      }
-
-      const modelId = entry.slice(0, separatorIndex).trim();
-      const runtime = entry.slice(separatorIndex + 1).trim();
-      if (!modelId || !runtime) {
-        throw new Error(`Invalid model runtime entry: ${entry}`);
-      }
-
-      accumulator[modelId] = runtime;
-      return accumulator;
-    }, {});
-}
-
-function parseOptionalNumber(rawValue: string | undefined): number | undefined {
-  if (!rawValue) {
-    return undefined;
-  }
-
-  const parsed = Number(rawValue);
-  if (!Number.isFinite(parsed)) {
-    throw new Error(`Invalid numeric value: ${rawValue}`);
-  }
-
-  return parsed;
 }

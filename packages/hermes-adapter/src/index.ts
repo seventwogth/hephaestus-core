@@ -52,6 +52,17 @@ export interface OllamaModelProviderOptions {
   systemPrompt?: string;
 }
 
+export interface LocalModelProviderEnvironment {
+  HEPHAESTUS_MODEL_RUNTIME_MAP?: string;
+  HEPHAESTUS_OLLAMA_BASE_URL?: string;
+  HEPHAESTUS_OLLAMA_TIMEOUT_MS?: string;
+}
+
+export interface LocalModelRuntime {
+  provider: "stub" | "ollama";
+  target: string;
+}
+
 export class StubModelProvider implements ModelProvider {
   async generate(input: AgentRunInput): Promise<AgentRunResult> {
     return {
@@ -217,6 +228,44 @@ export class OllamaModelProvider implements ModelProvider {
   }
 }
 
+export function resolveLocalModelRuntime(
+  modelId: string,
+  env: LocalModelProviderEnvironment = process.env
+): LocalModelRuntime {
+  const mappedRuntime = parseRuntimeMap(env.HEPHAESTUS_MODEL_RUNTIME_MAP)[modelId];
+  const runtimeSpec = mappedRuntime ?? (modelId === "stub" ? "stub" : `ollama:${modelId}`);
+
+  if (runtimeSpec === "stub") {
+    return { provider: "stub", target: "stub" };
+  }
+
+  if (runtimeSpec.startsWith("ollama:")) {
+    return {
+      provider: "ollama",
+      target: runtimeSpec.slice("ollama:".length)
+    };
+  }
+
+  throw new Error(`Unsupported runtime for model ${modelId}: ${runtimeSpec}`);
+}
+
+export function createLocalModelProvider(
+  modelId: string,
+  env: LocalModelProviderEnvironment = process.env
+): ModelProvider {
+  const runtime = resolveLocalModelRuntime(modelId, env);
+
+  if (runtime.provider === "stub") {
+    return new StubModelProvider();
+  }
+
+  return new OllamaModelProvider({
+    model: runtime.target,
+    baseUrl: env.HEPHAESTUS_OLLAMA_BASE_URL,
+    timeoutMs: parseOptionalNumber(env.HEPHAESTUS_OLLAMA_TIMEOUT_MS)
+  });
+}
+
 function parseAgentRunResult(role: AgentRole, rawOutput: string): AgentRunResult {
   const payload = JSON.parse(rawOutput) as Partial<AgentRunResult> & { rawOutput?: string };
 
@@ -259,4 +308,43 @@ function buildOllamaPrompt(input: AgentRunInput): string {
     "Текущий контекст проекта:",
     filesBlock
   ].join("\n");
+}
+
+function parseRuntimeMap(rawValue: string | undefined): Record<string, string> {
+  if (!rawValue) {
+    return {};
+  }
+
+  return rawValue
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .reduce<Record<string, string>>((accumulator, entry) => {
+      const separatorIndex = entry.indexOf("=");
+      if (separatorIndex === -1) {
+        throw new Error(`Invalid model runtime entry: ${entry}`);
+      }
+
+      const modelId = entry.slice(0, separatorIndex).trim();
+      const runtime = entry.slice(separatorIndex + 1).trim();
+      if (!modelId || !runtime) {
+        throw new Error(`Invalid model runtime entry: ${entry}`);
+      }
+
+      accumulator[modelId] = runtime;
+      return accumulator;
+    }, {});
+}
+
+function parseOptionalNumber(rawValue: string | undefined): number | undefined {
+  if (!rawValue) {
+    return undefined;
+  }
+
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Invalid numeric value: ${rawValue}`);
+  }
+
+  return parsed;
 }

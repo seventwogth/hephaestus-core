@@ -72,6 +72,18 @@ export interface FixProjectStageOptions extends ValidateProjectStageOptions {
   writableFiles?: string[];
 }
 
+export interface BootstrapProjectOptions extends FixProjectStageOptions {
+  runIntegration?: boolean;
+  runValidation?: boolean;
+  autoFix?: boolean;
+  runDocumentation?: boolean;
+}
+
+export interface BootstrapProjectResult {
+  spec: ProjectSpec;
+  validationReport?: ValidationReport;
+}
+
 export class FileProjectStateStore implements ProjectStateStore {
   async readSpec(projectDir: string): Promise<ProjectSpec | null> {
     return readJson(join(projectDir, "SPEC.json"), projectSpecSchema);
@@ -124,7 +136,11 @@ export class Orchestrator {
     private readonly modelProvider?: ModelProvider
   ) {}
 
-  async bootstrapProjectFromPrompt(projectDir: string, requestText: string): Promise<ProjectSpec> {
+  async bootstrapProjectFromPrompt(
+    projectDir: string,
+    requestText: string,
+    options: BootstrapProjectOptions = {}
+  ): Promise<BootstrapProjectResult> {
     const spec = await this.createRequirementsStage(projectDir, requestText);
 
     await this.scaffoldProject(projectDir, spec);
@@ -132,8 +148,26 @@ export class Orchestrator {
     await this.generateDatabaseStage(projectDir);
     await this.generateBackendStage(projectDir);
     await this.generateFrontendStage(projectDir);
+    if (options.runIntegration ?? true) {
+      await this.integrateProjectStage(projectDir);
+    }
 
-    return spec;
+    let validationReport: ValidationReport | undefined;
+    if (options.runValidation ?? true) {
+      validationReport = await this.validateProjectStage(projectDir, options);
+      if (!validationReport.passed && (options.autoFix ?? true) && this.modelProvider) {
+        validationReport = await this.fixProjectStage(projectDir, options);
+      }
+    }
+
+    if ((options.runDocumentation ?? true) && (validationReport?.passed ?? true)) {
+      await this.documentProjectStage(projectDir);
+    }
+
+    return {
+      spec,
+      validationReport
+    };
   }
 
   async scaffoldProject(projectDir: string, spec: ProjectSpec): Promise<void> {
@@ -279,6 +313,74 @@ export class Orchestrator {
     }
 
     await this.updateTaskStatus(projectDir, "frontend", "done");
+  }
+
+  async integrateProjectStage(projectDir: string): Promise<void> {
+    const plan = await this.store.readPlan(projectDir);
+    const spec = await this.store.readSpec(projectDir);
+    if (!plan || !spec) {
+      throw new Error("SPEC.json или PLAN.json не найден");
+    }
+
+    await this.setStage(projectDir, "GENERATING");
+    await this.updateTaskStatus(projectDir, "integration", "in_progress");
+
+    if (this.modelProvider) {
+      await this.runAgentStage(projectDir, {
+        role: "integrator",
+        instruction: buildIntegrationInstruction(plan),
+        contextFiles: [
+          "SPEC.json",
+          "PLAN.json",
+          "docker-compose.yml",
+          "backend/go.mod",
+          "backend/cmd/api/main.go",
+          "backend/internal/http/generated_routes.go",
+          "frontend/package.json",
+          "frontend/src/main.tsx",
+          "frontend/src/App.tsx",
+          "README.md"
+        ],
+        writableFiles: ["backend", "frontend", "docker-compose.yml", "README.md"],
+        validationCommand: "docker compose config"
+      });
+    }
+
+    await this.updateTaskStatus(projectDir, "integration", "done");
+  }
+
+  async documentProjectStage(projectDir: string): Promise<void> {
+    const plan = await this.store.readPlan(projectDir);
+    const spec = await this.store.readSpec(projectDir);
+    if (!plan || !spec) {
+      throw new Error("SPEC.json или PLAN.json не найден");
+    }
+
+    await this.setStage(projectDir, "DOCUMENTING");
+    await this.updateTaskStatus(projectDir, "documentation", "in_progress");
+
+    if (this.modelProvider) {
+      await this.runAgentStage(projectDir, {
+        role: "documentation",
+        instruction: buildDocumentationInstruction(spec, plan),
+        contextFiles: [
+          "REQUEST.md",
+          "SPEC.json",
+          "PLAN.json",
+          "REVIEW.md",
+          "docker-compose.yml",
+          "backend/go.mod",
+          "frontend/package.json",
+          "README.md"
+        ],
+        writableFiles: ["README.md"]
+      });
+    } else {
+      await writeFile(join(projectDir, "README.md"), renderProjectReadme(spec, plan), "utf8");
+    }
+
+    await this.updateTaskStatus(projectDir, "documentation", "done");
+    await this.setStage(projectDir, "READY");
   }
 
   async runAgentStage(projectDir: string, input: AgentStageInput): Promise<AgentRunResult> {
@@ -630,6 +732,64 @@ function buildFrontendInstruction(plan: ProjectPlan): string {
   ].join("\n");
 }
 
+function buildIntegrationInstruction(plan: ProjectPlan): string {
+  return [
+    `Интегрируй backend, frontend и docker-compose проекта ${plan.projectName} в единый рабочий контур.`,
+    "Проверь согласованность API routes, переменных окружения, URL, портов и docker-compose wiring.",
+    "Исправляй только разрешенные файлы и возвращай их полное содержимое."
+  ].join("\n");
+}
+
+function buildDocumentationInstruction(spec: ProjectSpec, plan: ProjectPlan): string {
+  return [
+    `Обнови README.md для проекта ${spec.projectName}.`,
+    `Опиши назначение проекта, стек (${plan.stack.frontend}, ${plan.stack.backend}, ${plan.stack.database}),`,
+    "основные команды запуска, структуру каталогов и ключевые endpoints.",
+    "Пиши по-русски и возвращай полное содержимое README.md."
+  ].join("\n");
+}
+
 function ensureTrailingNewline(value: string): string {
   return value.endsWith("\n") ? value : `${value}\n`;
+}
+
+function renderProjectReadme(spec: ProjectSpec, plan: ProjectPlan): string {
+  const endpointLines = plan.endpoints
+    .map((endpoint) => `- \`${endpoint.method} ${endpoint.path}\` — ${endpoint.summary}`)
+    .join("\n");
+  const entityLines = spec.entities.length === 0
+    ? "- нет явно описанных сущностей"
+    : spec.entities.map((entity) => `- ${entity.name}`).join("\n");
+
+  return [
+    `# ${spec.projectName}`,
+    "",
+    spec.description,
+    "",
+    "## Стек",
+    "",
+    `- Frontend: ${plan.stack.frontend}`,
+    `- Backend: ${plan.stack.backend}`,
+    `- Database: ${plan.stack.database}`,
+    `- API: ${plan.stack.api}`,
+    "",
+    "## Сущности",
+    "",
+    entityLines,
+    "",
+    "## API",
+    "",
+    endpointLines,
+    "",
+    "## Локальный запуск",
+    "",
+    "```bash",
+    "docker compose up --build",
+    "```",
+    "",
+    "## Проверка",
+    "",
+    ...plan.validationCommands.map((command) => `- \`${command}\``),
+    ""
+  ].join("\n");
 }

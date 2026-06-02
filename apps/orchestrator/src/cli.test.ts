@@ -3,7 +3,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import {
+  bootstrapProjectFromDescription,
   parseScaffoldArgs,
+  parseBootstrapArgs,
   parseRequirementsArgs,
   parsePlanArgs,
   parseGenerateBackendArgs,
@@ -68,6 +70,19 @@ describe("scaffold CLI", () => {
   it("parses frontend generation arguments", () => {
     expect(parseGenerateFrontendArgs(["--project", "app"])).toEqual({
       projectDir: "app"
+    });
+  });
+
+  it("parses bootstrap arguments", () => {
+    expect(
+      parseBootstrapArgs(["--text", "Создай сервис книг", "--out", "app", "--model", "qwen2.5-coder:14b"])
+    ).toEqual({
+      text: "Создай сервис книг",
+      inputPath: undefined,
+      outDir: "app",
+      model: "qwen2.5-coder:14b",
+      runValidation: true,
+      autoFix: true
     });
   });
 
@@ -217,6 +232,152 @@ describe("scaffold CLI", () => {
       await expect(scaffoldFromSpecFile({ specPath, outDir })).resolves.toBe(outDir);
       await expect(readFile(join(outDir, "SPEC.json"), "utf8")).resolves.toContain("book-tracker");
       await expect(readFile(join(outDir, "README.md"), "utf8")).resolves.toContain("Шаблон");
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("bootstraps a project through the LLM-first CLI flow with the stub model", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "hephaestus-cli-"));
+    const outDir = join(rootDir, "agent-project");
+
+    try {
+      await expect(
+        bootstrapProjectFromDescription(
+          {
+            text: "Создай сервис учета книг.",
+            outDir,
+            model: "qwen2.5-coder:14b",
+            runValidation: false,
+            autoFix: false
+          },
+          {
+            runIntegration: false,
+            runDocumentation: false
+          },
+          {
+            async generate(input) {
+              if (input.role === "requirements") {
+                return {
+                  role: input.role,
+                  summary: "Created SPEC",
+                  changedFiles: ["SPEC.json"],
+                  updatedFiles: [
+                    {
+                      path: "SPEC.json",
+                      content: `${JSON.stringify({
+                        projectName: "agent-project",
+                        description: "Agent project",
+                        actors: [{ name: "user" }],
+                        features: [
+                          {
+                            id: "books-crud",
+                            title: "Manage books",
+                            description: "Manage books",
+                            priority: "must"
+                          }
+                        ],
+                        entities: [{ name: "Book", fields: ["title"] }],
+                        requiresAuth: true,
+                        requiresDatabase: true,
+                        constraints: [],
+                        acceptanceCriteria: ["Books can be listed"]
+                      }, null, 2)}\n`
+                    }
+                  ],
+                  rawOutput: "spec"
+                };
+              }
+
+              if (input.role === "architect") {
+                return {
+                  role: input.role,
+                  summary: "Created PLAN",
+                  changedFiles: ["PLAN.json"],
+                  updatedFiles: [
+                    {
+                      path: "PLAN.json",
+                      content: `${JSON.stringify({
+                        projectName: "agent-project",
+                        stack: {
+                          frontend: "react-vite-typescript",
+                          backend: "go-chi",
+                          database: "postgresql",
+                          api: "rest-openapi"
+                        },
+                        backendModules: ["books"],
+                        frontendRoutes: ["/"],
+                        databaseEntities: [{ name: "Book", fields: ["title"] }],
+                        endpoints: [
+                          {
+                            method: "GET",
+                            path: "/api/books",
+                            summary: "List books",
+                            authRequired: true
+                          }
+                        ],
+                        validationCommands: ["npm run build"]
+                      }, null, 2)}\n`
+                    }
+                  ],
+                  rawOutput: "plan"
+                };
+              }
+
+              if (input.role === "database") {
+                return {
+                  role: input.role,
+                  summary: "Created DB",
+                  changedFiles: ["backend/migrations/0001_generated_schema.sql"],
+                  updatedFiles: [
+                    {
+                      path: "backend/migrations/0001_generated_schema.sql",
+                      content: "CREATE TABLE IF NOT EXISTS books (id uuid primary key);\n"
+                    }
+                  ],
+                  rawOutput: "database"
+                };
+              }
+
+              if (input.role === "backend") {
+                return {
+                  role: input.role,
+                  summary: "Created backend",
+                  changedFiles: ["backend/internal/http/generated_routes.go"],
+                  updatedFiles: [
+                    {
+                      path: "backend/internal/http/generated_routes.go",
+                      content: "package http\n"
+                    }
+                  ],
+                  rawOutput: "backend"
+                };
+              }
+
+              if (input.role === "frontend") {
+                return {
+                  role: input.role,
+                  summary: "Created frontend",
+                  changedFiles: ["frontend/src/main.tsx"],
+                  updatedFiles: [
+                    {
+                      path: "frontend/src/main.tsx",
+                      content: 'console.log("agent-project")\n'
+                    }
+                  ],
+                  rawOutput: "frontend"
+                };
+              }
+
+              throw new Error(`unexpected role: ${input.role}`);
+            }
+          }
+        )
+      ).resolves.toBe(outDir);
+
+      await expect(readFile(join(outDir, "REQUEST.md"), "utf8")).resolves.toContain("учета книг");
+      await expect(readFile(join(outDir, "SPEC.json"), "utf8")).resolves.toContain("agent-project");
+      await expect(readFile(join(outDir, "AGENT_RUNS.jsonl"), "utf8")).resolves.toContain("\"role\":\"requirements\"");
     } finally {
       await rm(rootDir, { recursive: true, force: true });
     }

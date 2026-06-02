@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CommandModelProvider, OllamaModelProvider, StubModelProvider } from "./index.js";
+import {
+  CommandModelProvider,
+  createLocalModelProvider,
+  OllamaModelProvider,
+  resolveLocalModelRuntime,
+  StubModelProvider
+} from "./index.js";
 
 describe("StubModelProvider", () => {
   it("returns a deterministic agent result", async () => {
@@ -89,5 +95,44 @@ describe("OllamaModelProvider", () => {
     );
     expect(result.summary).toBe("Generated backend");
     expect(result.updatedFiles[0]?.path).toBe("backend/main.go");
+  });
+});
+
+describe("resolveLocalModelRuntime", () => {
+  it("defaults unknown models to Ollama runtime", () => {
+    expect(resolveLocalModelRuntime("qwen2.5-coder:14b")).toEqual({
+      provider: "ollama",
+      target: "qwen2.5-coder:14b"
+    });
+  });
+
+  it("supports explicit runtime map overrides", () => {
+    expect(
+      resolveLocalModelRuntime("quality", {
+        HEPHAESTUS_MODEL_RUNTIME_MAP: "quality=ollama:qwen2.5-coder:32b"
+      })
+    ).toEqual({
+      provider: "ollama",
+      target: "qwen2.5-coder:32b"
+    });
+  });
+});
+
+describe("createLocalModelProvider", () => {
+  it("creates a stub provider for the stub model id", async () => {
+    const provider = createLocalModelProvider("stub");
+    const result = await provider.generate({
+      role: "frontend",
+      instruction: "noop",
+      files: [],
+      writableFiles: ["frontend"]
+    });
+
+    expect(result.summary).toContain("frontend");
+  });
+
+  it("creates an Ollama provider for non-stub model ids", () => {
+    const provider = createLocalModelProvider("qwen2.5-coder:14b");
+    expect(provider).toBeInstanceOf(OllamaModelProvider);
   });
 });

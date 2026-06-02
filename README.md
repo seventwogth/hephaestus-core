@@ -130,6 +130,35 @@ in-memory store.
 На первом запуске проверка frontend может потребовать доступ к npm registry,
 потому что валидатор устанавливает зависимости в созданном проекте.
 
+## Локальный LLM-first запуск
+
+Если Ollama и Hermes/Hephaestus runtime стоят на одной машине, проект можно
+запускать напрямую с этой машины без Telegram:
+
+```bash
+npm run bootstrap-project -- --text "Создай сервис учета книг" --out ./generated-projects/book-tracker --model qwen2.5-coder:14b
+```
+
+Доступные флаги:
+
+- `--text` или `--input` — описание проекта
+- `--out` — директория проекта
+- `--model` — id локальной модели, по умолчанию это Ollama model id
+- `--no-validate` — пропустить validation stage
+- `--no-fix` — не запускать fixer loop после неуспешной проверки
+
+LLM-first bootstrap теперь идёт по цепочке:
+
+1. `REQUEST.md`
+2. `SPEC.json`
+3. `PLAN.json`
+4. `database`
+5. `backend`
+6. `frontend`
+7. `integrator`
+8. `validate -> fixer -> revalidate`
+9. `documentation`
+
 ## Telegram-бот MVP
 
 Telegram-бот находится в `apps/telegram-bot`. Он работает через polling Telegram
@@ -153,6 +182,10 @@ TELEGRAM_BOT_TOKEN=... npm run telegram-bot
 
 После выбора модели бот сохраняет её в `MODEL_SELECTION.json` внутри созданного
 проекта и, если модель не `stub`, поднимает для неё реальный provider.
+
+Это соответствует сценарию удалённого управления: Ollama и runtime живут на
+одной машине, бот получает команды из Telegram, а сам проект создаётся и
+валидируется локально на хосте.
 
 Текущий LLM-first flow в боте:
 

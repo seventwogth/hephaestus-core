@@ -166,6 +166,18 @@ describe("LocalProjectBootstrapper", () => {
     try {
       const bootstrapper = new LocalProjectBootstrapper({
         outputRoot,
+        bootstrapOptions: {
+          checks: [
+            {
+              id: "npm-version",
+              title: "Проверка npm",
+              command: "npm",
+              args: ["--version"],
+              cwd: ".",
+              required: true
+            }
+          ]
+        },
         createModelProvider() {
           return {
             async generate(input) {
@@ -281,6 +293,36 @@ describe("LocalProjectBootstrapper", () => {
                 };
               }
 
+              if (input.role === "integrator") {
+                return {
+                  role: input.role,
+                  summary: "Integrated stack",
+                  changedFiles: ["docker-compose.yml"],
+                  updatedFiles: [
+                    {
+                      path: "docker-compose.yml",
+                      content: "services:\n  api:\n    image: agent-books\n"
+                    }
+                  ],
+                  rawOutput: "integrator"
+                };
+              }
+
+              if (input.role === "documentation") {
+                return {
+                  role: input.role,
+                  summary: "Updated docs",
+                  changedFiles: ["README.md"],
+                  updatedFiles: [
+                    {
+                      path: "README.md",
+                      content: "# agent-books\n\nRun with docker compose.\n"
+                    }
+                  ],
+                  rawOutput: "documentation"
+                };
+              }
+
               throw new Error(`unexpected role: ${input.role}`);
             }
           };
@@ -298,6 +340,7 @@ describe("LocalProjectBootstrapper", () => {
       expect(modelFile).toContain("\"provider\": \"ollama\"");
       await expect(readFile(join(project.projectDir, "AGENT_RUNS.jsonl"), "utf8")).resolves.toContain("\"role\":\"requirements\"");
       await expect(readFile(join(project.projectDir, "frontend/src/main.tsx"), "utf8")).resolves.toContain("agent-books");
+      await expect(readFile(join(project.projectDir, "README.md"), "utf8")).resolves.toContain("Run with docker compose");
     } finally {
       await rm(outputRoot, { recursive: true, force: true });
     }

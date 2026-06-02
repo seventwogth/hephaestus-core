@@ -3,13 +3,18 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { analyzeRequirements, createArchitecturePlan } from "@hephaestus/agents";
 import { projectSpecSchema } from "@hephaestus/contracts";
+import { createLocalModelProvider, type ModelProvider } from "@hephaestus/hermes-adapter";
 import {
   generateDatabaseArtifacts,
   generateGoBackend,
   generateReactFrontend
 } from "@hephaestus/project-generator";
 import { type ValidationCheck, validateGeneratedWebApp } from "@hephaestus/project-validator";
-import { FileProjectStateStore, Orchestrator } from "./index.js";
+import {
+  type BootstrapProjectOptions,
+  FileProjectStateStore,
+  Orchestrator
+} from "./index.js";
 
 export interface ScaffoldCliOptions {
   specPath: string;
@@ -42,6 +47,15 @@ export interface GenerateDatabaseCliOptions {
 
 export interface GenerateFrontendCliOptions {
   projectDir: string;
+}
+
+export interface BootstrapCliOptions {
+  text?: string;
+  inputPath?: string;
+  outDir: string;
+  model: string;
+  runValidation: boolean;
+  autoFix: boolean;
 }
 
 export function parseScaffoldArgs(args: string[]): ScaffoldCliOptions {
@@ -131,6 +145,30 @@ export function parseGenerateFrontendArgs(args: string[]): GenerateFrontendCliOp
   return { projectDir };
 }
 
+export function parseBootstrapArgs(args: string[]): BootstrapCliOptions {
+  const text = readOption(args, "--text") ?? undefined;
+  const inputPath = readOption(args, "--input") ?? undefined;
+  const outDir = readOption(args, "--out");
+  const model = readOption(args, "--model");
+  const runValidation = !args.includes("--no-validate");
+  const autoFix = !args.includes("--no-fix");
+
+  if ((!text && !inputPath) || !outDir || !model) {
+    throw new Error(
+      "Использование: hephaestus-scaffold bootstrap --text \"описание\" --out ./generated-projects/my-app --model qwen2.5-coder:14b"
+    );
+  }
+
+  return {
+    text,
+    inputPath,
+    outDir,
+    model,
+    runValidation,
+    autoFix
+  };
+}
+
 export async function scaffoldFromSpecFile(options: ScaffoldCliOptions): Promise<string> {
   const specPath = resolve(options.specPath);
   const outDir = resolve(options.outDir);
@@ -204,6 +242,25 @@ export async function validateProjectDirectory(
   return report.passed;
 }
 
+export async function bootstrapProjectFromDescription(
+  options: BootstrapCliOptions,
+  bootstrapOptions: Partial<BootstrapProjectOptions> = {},
+  providerOverride?: ModelProvider
+): Promise<string> {
+  const text = options.text ?? await readFile(resolve(options.inputPath!), "utf8");
+  const outDir = resolve(options.outDir);
+  const provider = providerOverride ?? createLocalModelProvider(options.model);
+  const orchestrator = new Orchestrator(new FileProjectStateStore(), provider);
+
+  await orchestrator.bootstrapProjectFromPrompt(outDir, text, {
+    runValidation: options.runValidation,
+    autoFix: options.autoFix,
+    ...bootstrapOptions
+  });
+
+  return outDir;
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
@@ -241,6 +298,12 @@ async function main(): Promise<void> {
     const passed = await validateProjectDirectory(parseValidateArgs(args.slice(1)));
     console.log(passed ? "Проверка проекта успешна" : "Проверка проекта завершилась ошибкой");
     process.exitCode = passed ? 0 : 1;
+    return;
+  }
+
+  if (args[0] === "bootstrap") {
+    const outDir = await bootstrapProjectFromDescription(parseBootstrapArgs(args.slice(1)));
+    console.log(`LLM-first проект создан: ${outDir}`);
     return;
   }
 
