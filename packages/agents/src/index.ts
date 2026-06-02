@@ -1,4 +1,5 @@
 import {
+  type EntityFieldConfig,
   type ProjectPlan,
   type ProjectSpec,
   projectPlanSchema,
@@ -44,7 +45,8 @@ export function createArchitecturePlan(spec: ProjectSpec): ProjectPlan {
   const normalizedSpec = projectSpecSchema.parse(spec);
   const primaryEntity = normalizedSpec.entities[0] ?? {
     name: "Item",
-    fields: ["title", "description", "status"],
+    fields: defaultFields(["title", "description", "status"]),
+    indexes: [],
     description: "Основная сущность приложения"
   };
   const resourceName = toResourceName(primaryEntity.name);
@@ -195,7 +197,8 @@ function inferEntities(text: string): ProjectSpec["entities"] {
     return [
       {
         name: "Book",
-        fields: ["title", "author", "genre", "status"],
+        fields: defaultFields(["title", "author", "genre", "status"]),
+        indexes: [],
         description: "Книга в пользовательской библиотеке"
       }
     ];
@@ -205,8 +208,32 @@ function inferEntities(text: string): ProjectSpec["entities"] {
     return [
       {
         name: "Task",
-        fields: ["title", "description", "status", "assignee"],
+        fields: [
+          createField("title"),
+          createField("description", { type: "text", required: false }),
+          createField("status", { indexed: true }),
+          createField("assignee", { required: false }),
+          createField("projectId", {
+            type: "integer",
+            indexed: true,
+            references: {
+              entity: "Project",
+              field: "id",
+              onDelete: "cascade"
+            }
+          })
+        ],
+        indexes: [{ fields: ["projectId", "status"], unique: false }],
         description: "Задача пользователя или команды"
+      },
+      {
+        name: "Project",
+        fields: [
+          createField("title", { unique: true }),
+          createField("description", { type: "text", required: false })
+        ],
+        indexes: [{ fields: ["title"], unique: true }],
+        description: "Проект, к которому относятся задачи"
       }
     ];
   }
@@ -215,7 +242,11 @@ function inferEntities(text: string): ProjectSpec["entities"] {
     return [
       {
         name: "Note",
-        fields: ["title", "content"],
+        fields: [
+          createField("title"),
+          createField("content", { type: "text" })
+        ],
+        indexes: [],
         description: "Пользовательская заметка"
       }
     ];
@@ -224,7 +255,8 @@ function inferEntities(text: string): ProjectSpec["entities"] {
   return [
     {
       name: "Item",
-      fields: ["title", "description", "status"],
+      fields: defaultFields(["title", "description", "status"]),
+      indexes: [],
       description: "Основная сущность приложения"
     }
   ];
@@ -270,6 +302,24 @@ function inferProjectName(text: string): string {
   }
 
   return "generated-web-app";
+}
+
+function defaultFields(fields: string[]): EntityFieldConfig[] {
+  return fields.map((field) => createField(field));
+}
+
+function createField(
+  name: string,
+  overrides: Partial<EntityFieldConfig> = {}
+): EntityFieldConfig {
+  return {
+    name,
+    type: "string",
+    required: true,
+    unique: false,
+    indexed: false,
+    ...overrides
+  };
 }
 
 function toResourceName(entityName: string): string {

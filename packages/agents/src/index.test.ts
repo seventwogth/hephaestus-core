@@ -23,6 +23,8 @@ describe("analyzeRequirements", () => {
 
     expect(spec.projectName).toBe("custom-crm");
     expect(spec.entities[0]?.name).toBe("Task");
+    expect(spec.entities[1]?.name).toBe("Project");
+    expect(spec.entities[0]?.fields.find((field) => field.name === "projectId")?.references?.entity).toBe("Project");
   });
 
   it("rejects empty descriptions", () => {
@@ -41,5 +43,6 @@ describe("analyzeRequirements", () => {
     expect(plan.frontendRoutes).toContain("/books");
     expect(plan.endpoints.map((endpoint) => endpoint.path)).toContain("/api/books");
     expect(plan.validationCommands).toContain("cd backend && go test ./...");
+    expect(plan.databaseEntities[0]?.fields[0]?.type).toBe("string");
   });
 });

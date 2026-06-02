@@ -26,6 +26,69 @@ describe("generateDatabaseArtifacts", () => {
       await rm(projectDir, { recursive: true, force: true });
     }
   });
+
+  it("writes multiple tables with relations, types and indexes", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-generator-"));
+
+    try {
+      await materializeGeneratedWebApp({ targetDir: projectDir });
+      const files = await generateDatabaseArtifacts({
+        projectDir,
+        plan: {
+          projectName: "task-manager",
+          stack: {
+            frontend: "react-vite-typescript",
+            backend: "go-chi",
+            database: "postgresql",
+            api: "rest-openapi"
+          },
+          backendModules: ["tasks"],
+          frontendRoutes: ["/tasks"],
+          databaseEntities: [
+            {
+              name: "Task",
+              fields: [
+                { name: "title", type: "string", required: true, unique: false, indexed: false },
+                { name: "completed", type: "boolean", required: true, unique: false, indexed: true, defaultValue: false },
+                {
+                  name: "projectId",
+                  type: "integer",
+                  required: true,
+                  unique: false,
+                  indexed: true,
+                  references: {
+                    entity: "Project",
+                    field: "id",
+                    onDelete: "cascade"
+                  }
+                }
+              ],
+              indexes: [{ fields: ["projectId", "title"], unique: true }]
+            },
+            {
+              name: "Project",
+              fields: [
+                { name: "title", type: "string", required: true, unique: true, indexed: false }
+              ],
+              indexes: []
+            }
+          ],
+          endpoints: [{ method: "GET", path: "/api/tasks", summary: "List tasks", authRequired: true }],
+          validationCommands: []
+        }
+      });
+      const migration = await readFile(join(projectDir, "backend/migrations/0001_generated_schema.sql"), "utf8");
+
+      expect(files.map((file) => file.path)).toContain("backend/migrations/0001_generated_schema.sql");
+      expect(migration).toContain("CREATE TABLE IF NOT EXISTS projects");
+      expect(migration).toContain("CREATE TABLE IF NOT EXISTS tasks");
+      expect(migration).toContain("completed BOOLEAN NOT NULL DEFAULT FALSE");
+      expect(migration).toContain("REFERENCES projects (id) ON DELETE CASCADE");
+      expect(migration).toContain("CREATE UNIQUE INDEX IF NOT EXISTS tasks_project_id_title_idx");
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("generateGoBackend", () => {

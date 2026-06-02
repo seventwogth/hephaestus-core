@@ -1,4 +1,10 @@
-import { type ProjectPlan, projectPlanSchema } from "@hephaestus/contracts";
+import {
+  type EntityField,
+  type EntityIndex,
+  type ProjectEntity,
+  type ProjectPlan,
+  projectPlanSchema
+} from "@hephaestus/contracts";
 import { ProjectSandbox } from "@hephaestus/project-sandbox";
 
 export interface GeneratedFile {
@@ -27,13 +33,13 @@ export async function generateDatabaseArtifacts(
   const plan = projectPlanSchema.parse(options.plan);
   const entity = plan.databaseEntities[0] ?? {
     name: "Item",
-    fields: ["title", "description", "status"]
+    fields: defaultEntityFields(["title", "description", "status"])
   };
   const resourceName = inferResourceName(plan);
   const files = [
     {
       path: "backend/migrations/0001_generated_schema.sql",
-      content: renderDatabaseMigration(resourceName, entity.name, entity.fields)
+      content: renderDatabaseMigration(plan.databaseEntities.length > 0 ? plan.databaseEntities : [entity])
     }
   ];
 
@@ -45,7 +51,7 @@ export async function generateGoBackend(options: GenerateBackendOptions): Promis
   const plan = projectPlanSchema.parse(options.plan);
   const entity = plan.databaseEntities[0] ?? {
     name: "Item",
-    fields: ["title", "description", "status"]
+    fields: defaultEntityFields(["title", "description", "status"])
   };
   const resourceName = inferResourceName(plan);
   const files = [
@@ -68,7 +74,7 @@ export async function generateReactFrontend(options: GenerateFrontendOptions): P
   const plan = projectPlanSchema.parse(options.plan);
   const entity = plan.databaseEntities[0] ?? {
     name: "Item",
-    fields: ["title", "description", "status"]
+    fields: defaultEntityFields(["title", "description", "status"])
   };
   const resourceName = inferResourceName(plan);
   const files = [
@@ -93,14 +99,13 @@ export async function generateReactFrontend(options: GenerateFrontendOptions): P
 function buildDatabaseFiles(plan: ProjectPlan): GeneratedFile[] {
   const entity = plan.databaseEntities[0] ?? {
     name: "Item",
-    fields: ["title", "description", "status"]
+    fields: defaultEntityFields(["title", "description", "status"])
   };
-  const resourceName = inferResourceName(plan);
 
   return [
     {
       path: "backend/migrations/0001_generated_schema.sql",
-      content: renderDatabaseMigration(resourceName, entity.name, entity.fields)
+      content: renderDatabaseMigration(plan.databaseEntities.length > 0 ? plan.databaseEntities : [entity])
     }
   ];
 }
@@ -123,24 +128,32 @@ function inferResourceName(plan: ProjectPlan): string {
     return resourceEndpoint.path.split("/").filter(Boolean)[1]!;
   }
 
-  const entityName = plan.databaseEntities[0]?.name.toLowerCase() ?? "item";
-  return entityName.endsWith("s") ? entityName : `${entityName}s`;
+  return inferResourceNameFromEntity(plan.databaseEntities[0]?.name ?? "Item");
 }
 
-function renderDatabaseMigration(resourceName: string, entityName: string, fields: string[]): string {
-  const columns = normalizedEntityFields(fields).map((field) => {
-    return `  ${toSqlName(field)} TEXT NOT NULL DEFAULT ''`;
-  });
-  const tableName = toSqlName(resourceName);
+function renderDatabaseMigration(entities: ProjectEntity[]): string {
+  const orderedEntities = sortEntitiesByDependencies(entities);
+  const statements: string[] = [];
 
-  return `-- Generated schema for ${entityName}.
-CREATE TABLE IF NOT EXISTS ${tableName} (
-  id BIGSERIAL PRIMARY KEY${columns.length > 0 ? ",\n" : ""}${columns.join(",\n")}
-);
-`;
+  for (const entity of orderedEntities) {
+    const tableName = toSqlName(inferResourceNameFromEntity(entity.name));
+    const fields = normalizedEntityFields(entity.fields);
+    const columns = fields.map((field) => renderColumnDefinition(field));
+    statements.push(
+      `CREATE TABLE IF NOT EXISTS ${tableName} (\n  id BIGSERIAL PRIMARY KEY${
+        columns.length > 0 ? ",\n" : ""
+      }${columns.join(",\n")}\n);`
+    );
+
+    for (const statement of renderIndexStatements(entity, tableName, fields)) {
+      statements.push(statement);
+    }
+  }
+
+  return `-- Generated schema for ${orderedEntities.map((entity) => entity.name).join(", ")}.\n${statements.join("\n\n")}\n`;
 }
 
-function renderGeneratedRoutes(resourceName: string, entityName: string, fields: string[]): string {
+function renderGeneratedRoutes(resourceName: string, entityName: string, fields: EntityField[]): string {
   const modelName = toGoIdentifier(entityName);
   const variableName = lowerFirst(modelName);
   const routeTypeName = `generated${modelName}Routes`;
@@ -151,7 +164,7 @@ function renderGeneratedRoutes(resourceName: string, entityName: string, fields:
   const createInputName = `create${modelName}Input`;
   const updateInputName = `update${modelName}Input`;
   const tableName = toSqlName(resourceName);
-  const entityFields = normalizedEntityFields(fields);
+  const entityFields = normalizedEntityFields(fields).map((field) => field.name);
   const structFields = ["id", ...entityFields].map((field) => {
     const jsonName = toJsonName(field);
     return `\t${toGoIdentifier(field)} string \`json:"${jsonName}"\``;
@@ -368,13 +381,13 @@ func nullableString(value *string) any {
 `;
 }
 
-function renderGeneratedRoutesTest(resourceName: string, entityName: string, fields: string[]): string {
+function renderGeneratedRoutesTest(resourceName: string, entityName: string, fields: EntityField[]): string {
   const modelName = toGoIdentifier(entityName);
   const routeFactoryName = `newGenerated${modelName}Routes`;
   const storeTypeName = `stub${modelName}Store`;
   const createInputName = `create${modelName}Input`;
   const updateInputName = `update${modelName}Input`;
-  const entityFields = normalizedEntityFields(fields);
+  const entityFields = normalizedEntityFields(fields).map((field) => field.name);
   const fieldJsonEntries = entityFields.map((field) => `"${toJsonName(field)}":"${sampleFieldValue(field)}"`);
   const updateField = entityFields[0];
   const updateJson = updateField
@@ -482,12 +495,13 @@ func TestGeneratedResourceCRUD(t *testing.T) {
 `;
 }
 
-function renderApiClient(resourceName: string, entityName: string, fields: string[]): string {
+function renderApiClient(resourceName: string, entityName: string, fields: EntityField[]): string {
   const modelName = toGoIdentifier(entityName);
-  const typeFields = unique(["id", ...fields]).map((field) => {
+  const fieldNames = normalizedEntityFields(fields).map((field) => field.name);
+  const typeFields = unique(["id", ...fieldNames]).map((field) => {
     return `  ${toJsonName(field)}: string;`;
   });
-  const createFields = normalizedEntityFields(fields).map((field) => {
+  const createFields = fieldNames.map((field) => {
     return `  ${toJsonName(field)}: string;`;
   });
 
@@ -525,10 +539,10 @@ export async function create${modelName}(input: Create${modelName}Input): Promis
 `;
 }
 
-function renderFrontendApp(entityName: string, fields: string[]): string {
+function renderFrontendApp(entityName: string, fields: EntityField[]): string {
   const modelName = toGoIdentifier(entityName);
   const title = entityName === "Book" ? "Учет книг" : `Управление ${entityName}`;
-  const uniqueFields = normalizedEntityFields(fields);
+  const uniqueFields = normalizedEntityFields(fields).map((field) => field.name);
   const initialForm = uniqueFields.map((field) => `${toJsonName(field)}: ""`).join(", ");
   const formInputs = uniqueFields.map((field) => {
     const jsonName = toJsonName(field);
@@ -808,8 +822,19 @@ function renderJSONBody(entries: string[]): string {
   return `{${entries.join(",")}}`;
 }
 
-function normalizedEntityFields(fields: string[]): string[] {
-  return unique(fields).filter((field) => toJsonName(field) !== "id");
+function normalizedEntityFields(fields: EntityField[]): EntityField[] {
+  const byName = new Map<string, EntityField>();
+
+  for (const field of fields) {
+    const normalizedName = toJsonName(field.name);
+    if (normalizedName === "id" || byName.has(normalizedName)) {
+      continue;
+    }
+
+    byName.set(normalizedName, field);
+  }
+
+  return Array.from(byName.values());
 }
 
 function sampleFieldValue(field: string): string {
@@ -876,4 +901,163 @@ function toRussianFieldLabel(field: string): string {
 
 function unique(values: string[]): string[] {
   return Array.from(new Set(values));
+}
+
+function inferResourceNameFromEntity(entityName: string): string {
+  const normalized = toSqlName(entityName);
+  return normalized.endsWith("s") ? normalized : `${normalized}s`;
+}
+
+function renderColumnDefinition(field: EntityField): string {
+  const parts = [`  ${toSqlName(field.name)} ${toSqlType(field)}`];
+
+  if (field.required) {
+    parts.push("NOT NULL");
+  }
+
+  if (field.unique) {
+    parts.push("UNIQUE");
+  }
+
+  if (field.defaultValue !== undefined) {
+    parts.push(`DEFAULT ${renderDefaultValue(field.defaultValue, field.type)}`);
+  }
+
+  if (field.references) {
+    parts.push(renderReferenceClause(field.references));
+  }
+
+  return parts.join(" ");
+}
+
+function toSqlType(field: EntityField): string {
+  switch (field.type) {
+    case "text":
+      return "TEXT";
+    case "integer":
+      return "INTEGER";
+    case "number":
+      return "DOUBLE PRECISION";
+    case "boolean":
+      return "BOOLEAN";
+    case "date":
+      return "DATE";
+    case "datetime":
+      return "TIMESTAMPTZ";
+    case "json":
+      return "JSONB";
+    case "string":
+    default:
+      return "TEXT";
+  }
+}
+
+function renderDefaultValue(
+  value: string | number | boolean | null,
+  type: EntityField["type"]
+): string {
+  if (value === null) {
+    return "NULL";
+  }
+
+  if (typeof value === "number") {
+    return String(value);
+  }
+
+  if (typeof value === "boolean") {
+    return value ? "TRUE" : "FALSE";
+  }
+
+  if (type === "json") {
+    return `'${escapeSqlString(value)}'::jsonb`;
+  }
+
+  return `'${escapeSqlString(value)}'`;
+}
+
+function renderReferenceClause(reference: NonNullable<EntityField["references"]>): string {
+  const referencedTable = toSqlName(inferResourceNameFromEntity(reference.entity));
+  const onDeleteMap: Record<NonNullable<EntityField["references"]>["onDelete"], string> = {
+    restrict: "RESTRICT",
+    cascade: "CASCADE",
+    set_null: "SET NULL"
+  };
+
+  return `REFERENCES ${referencedTable} (${toSqlName(reference.field)}) ON DELETE ${onDeleteMap[reference.onDelete]}`;
+}
+
+function renderIndexStatements(
+  entity: ProjectEntity,
+  tableName: string,
+  fields: EntityField[]
+): string[] {
+  const statements: string[] = [];
+
+  for (const field of fields) {
+    if (!field.indexed) {
+      continue;
+    }
+
+    const indexName = `${tableName}_${toSqlName(field.name)}_idx`;
+    statements.push(
+      `CREATE INDEX IF NOT EXISTS ${indexName} ON ${tableName} (${toSqlName(field.name)});`
+    );
+  }
+
+  for (const index of entity.indexes ?? []) {
+    statements.push(renderEntityIndex(tableName, index));
+  }
+
+  return statements;
+}
+
+function renderEntityIndex(tableName: string, index: EntityIndex): string {
+  const indexName = index.name ?? `${tableName}_${index.fields.map(toSqlName).join("_")}_idx`;
+  const uniquePrefix = index.unique ? "UNIQUE " : "";
+  const columns = index.fields.map(toSqlName).join(", ");
+  return `CREATE ${uniquePrefix}INDEX IF NOT EXISTS ${indexName} ON ${tableName} (${columns});`;
+}
+
+function sortEntitiesByDependencies(entities: ProjectEntity[]): ProjectEntity[] {
+  const remaining = new Map(entities.map((entity) => [entity.name, entity]));
+  const resolved = new Set<string>();
+  const ordered: ProjectEntity[] = [];
+
+  while (remaining.size > 0) {
+    let progressed = false;
+
+    for (const [name, entity] of remaining) {
+      const dependencies = normalizedEntityFields(entity.fields)
+        .map((field) => field.references?.entity)
+        .filter((dependency): dependency is string => Boolean(dependency));
+
+      if (dependencies.every((dependency) => dependency === name || resolved.has(dependency) || !remaining.has(dependency))) {
+        ordered.push(entity);
+        resolved.add(name);
+        remaining.delete(name);
+        progressed = true;
+      }
+    }
+
+    if (!progressed) {
+      ordered.push(...remaining.values());
+      break;
+    }
+  }
+
+  return ordered;
+}
+
+function escapeSqlString(value: string): string {
+  return value.replace(/'/g, "''");
+}
+
+function defaultEntityFields(fields: string[]): EntityField[] {
+  return fields.map((field) => ({
+    name: field,
+    type: "string",
+    required: true,
+    unique: false,
+    indexed: false
+  }));
 }
