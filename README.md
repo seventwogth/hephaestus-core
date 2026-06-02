@@ -23,6 +23,7 @@ Hephaestus принимает описание продукта, преобра�
 ```text
 apps/
   orchestrator/          Конечный автомат и поток артефактов проекта
+  telegram-bot/          Telegram Bot API polling UI для запуска проектов
 packages/
   contracts/             Zod-схемы для SPEC, PLAN, TASKS, STATUS
   hermes-adapter/         Контракт провайдера модели для запуска агентов
@@ -119,6 +120,27 @@ in-memory store.
 
 На первом запуске проверка frontend может потребовать доступ к npm registry,
 потому что валидатор устанавливает зависимости в созданном проекте.
+
+## Telegram-бот MVP
+
+Telegram-бот находится в `apps/telegram-bot`. Он работает через polling Telegram
+Bot API, предлагает выбрать модель до старта проекта, затем принимает текстовое
+описание и создаёт проект через текущий orchestrator flow.
+
+Запуск:
+
+```bash
+TELEGRAM_BOT_TOKEN=... npm run telegram-bot
+```
+
+Переменные окружения:
+
+- `TELEGRAM_BOT_TOKEN` — токен Telegram-бота
+- `HEPHAESTUS_PROJECTS_DIR` — директория для создаваемых проектов, по умолчанию `./generated-projects`
+- `HEPHAESTUS_AVAILABLE_MODELS` — список моделей в формате `id|label|description,id2|label2|description2`
+
+После выбора модели бот сохраняет её в `MODEL_SELECTION.json` внутри созданного
+проекта, чтобы последующие этапы могли использовать этот контекст.
 
 ## Статус реализации
 
