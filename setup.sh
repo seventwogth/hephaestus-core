@@ -281,7 +281,6 @@ if [ -n "$additional_model" ] && [ "$additional_model" != "$default_model" ]; th
 fi
 
 say ""
-say "Шаг с Telegram нельзя автоматизировать полностью: Telegram не дает публичный API для создания бота через BotFather."
 say "Сейчас открой @BotFather, выполни /newbot и вставь сюда выданный токен."
 bot_token=""
 while [ -z "$bot_token" ]; do
