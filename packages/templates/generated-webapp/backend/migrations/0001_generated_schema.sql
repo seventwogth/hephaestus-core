@@ -1,0 +1,1 @@
+-- This file is replaced during the database generation stage.

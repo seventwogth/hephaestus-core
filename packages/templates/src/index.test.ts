@@ -12,6 +12,7 @@ describe("generated web app template", () => {
     const files = await listGeneratedWebAppTemplateFiles();
 
     expect(files).toContain("backend/go.mod");
+    expect(files).toContain("backend/migrations/migrations.go");
     expect(files).toContain("frontend/package.json");
     expect(files.some((file) => file.includes("node_modules"))).toBe(false);
     expect(files.some((file) => file.includes("dist/"))).toBe(false);
@@ -25,6 +26,7 @@ describe("generated web app template", () => {
       await materializeGeneratedWebApp({ targetDir });
 
       await expect(access(join(targetDir, "backend/go.mod"))).resolves.toBeUndefined();
+      await expect(access(join(targetDir, "backend/migrations/0001_generated_schema.sql"))).resolves.toBeUndefined();
       await expect(access(join(targetDir, "frontend/package.json"))).resolves.toBeUndefined();
       await expect(access(join(targetDir, "docker-compose.yml"))).resolves.toBeUndefined();
       await expect(access(join(targetDir, "frontend/node_modules"))).rejects.toThrow();

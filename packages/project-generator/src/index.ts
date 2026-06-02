@@ -6,6 +6,11 @@ export interface GeneratedFile {
   content: string;
 }
 
+export interface GenerateDatabaseOptions {
+  projectDir: string;
+  plan: ProjectPlan;
+}
+
 export interface GenerateBackendOptions {
   projectDir: string;
   plan: ProjectPlan;
@@ -16,7 +21,9 @@ export interface GenerateFrontendOptions {
   plan: ProjectPlan;
 }
 
-export async function generateGoBackend(options: GenerateBackendOptions): Promise<GeneratedFile[]> {
+export async function generateDatabaseArtifacts(
+  options: GenerateDatabaseOptions
+): Promise<GeneratedFile[]> {
   const plan = projectPlanSchema.parse(options.plan);
   const entity = plan.databaseEntities[0] ?? {
     name: "Item",
@@ -25,20 +32,35 @@ export async function generateGoBackend(options: GenerateBackendOptions): Promis
   const resourceName = inferResourceName(plan);
   const files = [
     {
+      path: "backend/migrations/0001_generated_schema.sql",
+      content: renderDatabaseMigration(resourceName, entity.name, entity.fields)
+    }
+  ];
+
+  await writeGeneratedFiles(options.projectDir, files);
+  return files;
+}
+
+export async function generateGoBackend(options: GenerateBackendOptions): Promise<GeneratedFile[]> {
+  const plan = projectPlanSchema.parse(options.plan);
+  const entity = plan.databaseEntities[0] ?? {
+    name: "Item",
+    fields: ["title", "description", "status"]
+  };
+  const resourceName = inferResourceName(plan);
+  const files = [
+    ...buildDatabaseFiles(plan),
+    {
       path: "backend/internal/http/generated_routes.go",
       content: renderGeneratedRoutes(resourceName, entity.name, entity.fields)
     },
     {
       path: "backend/internal/http/generated_routes_test.go",
-      content: renderGeneratedRoutesTest(resourceName)
+      content: renderGeneratedRoutesTest(resourceName, entity.name, entity.fields)
     }
   ];
-  const sandbox = new ProjectSandbox({ rootDir: options.projectDir, allowedCommands: [] });
 
-  for (const file of files) {
-    await sandbox.writeText(file.path, file.content);
-  }
-
+  await writeGeneratedFiles(options.projectDir, files);
   return files;
 }
 
@@ -63,13 +85,32 @@ export async function generateReactFrontend(options: GenerateFrontendOptions): P
       content: renderFrontendStyles()
     }
   ];
-  const sandbox = new ProjectSandbox({ rootDir: options.projectDir, allowedCommands: [] });
+
+  await writeGeneratedFiles(options.projectDir, files);
+  return files;
+}
+
+function buildDatabaseFiles(plan: ProjectPlan): GeneratedFile[] {
+  const entity = plan.databaseEntities[0] ?? {
+    name: "Item",
+    fields: ["title", "description", "status"]
+  };
+  const resourceName = inferResourceName(plan);
+
+  return [
+    {
+      path: "backend/migrations/0001_generated_schema.sql",
+      content: renderDatabaseMigration(resourceName, entity.name, entity.fields)
+    }
+  ];
+}
+
+async function writeGeneratedFiles(projectDir: string, files: GeneratedFile[]): Promise<void> {
+  const sandbox = new ProjectSandbox({ rootDir: projectDir, allowedCommands: [] });
 
   for (const file of files) {
     await sandbox.writeText(file.path, file.content);
   }
-
-  return files;
 }
 
 function inferResourceName(plan: ProjectPlan): string {
@@ -86,24 +127,66 @@ function inferResourceName(plan: ProjectPlan): string {
   return entityName.endsWith("s") ? entityName : `${entityName}s`;
 }
 
+function renderDatabaseMigration(resourceName: string, entityName: string, fields: string[]): string {
+  const columns = normalizedEntityFields(fields).map((field) => {
+    return `  ${toSqlName(field)} TEXT NOT NULL DEFAULT ''`;
+  });
+  const tableName = toSqlName(resourceName);
+
+  return `-- Generated schema for ${entityName}.
+CREATE TABLE IF NOT EXISTS ${tableName} (
+  id BIGSERIAL PRIMARY KEY${columns.length > 0 ? ",\n" : ""}${columns.join(",\n")}
+);
+`;
+}
+
 function renderGeneratedRoutes(resourceName: string, entityName: string, fields: string[]): string {
   const modelName = toGoIdentifier(entityName);
-  const structFields = unique(["id", ...fields]).map((field) => {
+  const variableName = lowerFirst(modelName);
+  const routeTypeName = `generated${modelName}Routes`;
+  const routeFactoryName = `newGenerated${modelName}Routes`;
+  const storeTypeName = `${variableName}Store`;
+  const postgresStoreTypeName = `postgres${modelName}Store`;
+  const notFoundName = `err${modelName}NotFound`;
+  const createInputName = `create${modelName}Input`;
+  const updateInputName = `update${modelName}Input`;
+  const tableName = toSqlName(resourceName);
+  const entityFields = normalizedEntityFields(fields);
+  const structFields = ["id", ...entityFields].map((field) => {
     const jsonName = toJsonName(field);
     return `\t${toGoIdentifier(field)} string \`json:"${jsonName}"\``;
   });
-  const updateAssignments = unique(fields).map((field) => {
+  const createPayloadFields = entityFields.map((field) => {
+    const jsonName = toJsonName(field);
+    return `\t${toGoIdentifier(field)} string \`json:"${jsonName}"\``;
+  });
+  const updatePayloadFields = entityFields.map((field) => {
+    const jsonName = toJsonName(field);
+    return `\t${toGoIdentifier(field)} *string \`json:"${jsonName}"\``;
+  });
+  const scanArgs = ["&item.Id", ...entityFields.map((field) => `&item.${toGoIdentifier(field)}`)].join(", ");
+  const persistedScanArgs = ["&persisted.Id", ...entityFields.map((field) => `&persisted.${toGoIdentifier(field)}`)].join(", ");
+  const returningColumns = renderReturningColumns(entityFields);
+  const insertArgs = entityFields.map((field) => `input.${toGoIdentifier(field)}`);
+  const updateAssignments = entityFields.map((field, index) => {
+    const columnName = toSqlName(field);
+    return `\t\t${columnName} = COALESCE($${index + 2}, ${columnName})`;
+  });
+  const updateArgs = entityFields.map((field) => `nullableString(input.${toGoIdentifier(field)})`);
+  const updateCopyLines = entityFields.map((field) => {
     const goField = toGoIdentifier(field);
-    return `\t\tif payload.${goField} != "" {\n\t\t\tcurrent.${goField} = payload.${goField}\n\t\t}`;
+    return `\tif input.${goField} != nil {\n\t\tpersisted.${goField} = *input.${goField}\n\t}`;
   });
 
   return `package http
 
 import (
+\t"context"
+\t"database/sql"
 \t"encoding/json"
+\t"errors"
+\t"fmt"
 \t"net/http"
-\t"strconv"
-\t"sync"
 
 \t"github.com/go-chi/chi/v5"
 )
@@ -112,112 +195,274 @@ type ${modelName} struct {
 ${structFields.join("\n")}
 }
 
-type generated${modelName}Store struct {
-\tmu     sync.Mutex
-\tnextID int
-\titems  map[string]${modelName}
+type ${createInputName} struct {
+${createPayloadFields.length > 0 ? createPayloadFields.join("\n") : ""}
 }
 
-var ${lowerFirst(modelName)}Store = &generated${modelName}Store{
-\tnextID: 1,
-\titems:  map[string]${modelName}{},
+type ${updateInputName} struct {
+${updatePayloadFields.length > 0 ? updatePayloadFields.join("\n") : ""}
 }
 
-func registerGeneratedRoutes(router chi.Router) {
+type ${storeTypeName} interface {
+\tList${modelName}s(ctx context.Context) ([]${modelName}, error)
+\tCreate${modelName}(ctx context.Context, input ${createInputName}) (${modelName}, error)
+\tUpdate${modelName}(ctx context.Context, id string, input ${updateInputName}) (${modelName}, error)
+\tDelete${modelName}(ctx context.Context, id string) error
+}
+
+var ${notFoundName} = errors.New("${toJsonName(entityName)} not found")
+
+type ${routeTypeName} struct {
+\tstore ${storeTypeName}
+}
+
+type ${postgresStoreTypeName} struct {
+\tdb *sql.DB
+}
+
+func NewGeneratedRouteRegistrar(db *sql.DB) GeneratedRouteRegistrar {
+\tif db == nil {
+\t\treturn noopGeneratedRouteRegistrar{}
+\t}
+
+\treturn ${routeFactoryName}(&${postgresStoreTypeName}{db: db})
+}
+
+func ${routeFactoryName}(store ${storeTypeName}) GeneratedRouteRegistrar {
+\treturn ${routeTypeName}{store: store}
+}
+
+func (routes ${routeTypeName}) Register(router chi.Router) {
 \trouter.Route("/${resourceName}", func(router chi.Router) {
-\t\trouter.Get("/", list${modelName}s)
-\t\trouter.Post("/", create${modelName})
-\t\trouter.Patch("/{id}", update${modelName})
-\t\trouter.Delete("/{id}", delete${modelName})
+\t\trouter.Get("/", routes.list${modelName}s)
+\t\trouter.Post("/", routes.create${modelName})
+\t\trouter.Patch("/{id}", routes.update${modelName})
+\t\trouter.Delete("/{id}", routes.delete${modelName})
 \t})
 }
 
-func list${modelName}s(w http.ResponseWriter, r *http.Request) {
-\t${lowerFirst(modelName)}Store.mu.Lock()
-\tdefer ${lowerFirst(modelName)}Store.mu.Unlock()
-
-\titems := make([]${modelName}, 0, len(${lowerFirst(modelName)}Store.items))
-\tfor _, item := range ${lowerFirst(modelName)}Store.items {
-\t\titems = append(items, item)
+func (routes ${routeTypeName}) list${modelName}s(w http.ResponseWriter, r *http.Request) {
+\titems, err := routes.store.List${modelName}s(r.Context())
+\tif err != nil {
+\t\twriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load records"})
+\t\treturn
 \t}
 
 \twriteJSON(w, http.StatusOK, items)
 }
 
-func create${modelName}(w http.ResponseWriter, r *http.Request) {
-\tvar payload ${modelName}
+func (routes ${routeTypeName}) create${modelName}(w http.ResponseWriter, r *http.Request) {
+\tvar payload ${createInputName}
 \tif err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 \t\twriteJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 \t\treturn
 \t}
 
-\t${lowerFirst(modelName)}Store.mu.Lock()
-\tdefer ${lowerFirst(modelName)}Store.mu.Unlock()
+\tcreated, err := routes.store.Create${modelName}(r.Context(), payload)
+\tif err != nil {
+\t\twriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to create record"})
+\t\treturn
+\t}
 
-\tpayload.Id = strconv.Itoa(${lowerFirst(modelName)}Store.nextID)
-\t${lowerFirst(modelName)}Store.nextID++
-\t${lowerFirst(modelName)}Store.items[payload.Id] = payload
-
-\twriteJSON(w, http.StatusCreated, payload)
+\twriteJSON(w, http.StatusCreated, created)
 }
 
-func update${modelName}(w http.ResponseWriter, r *http.Request) {
+func (routes ${routeTypeName}) update${modelName}(w http.ResponseWriter, r *http.Request) {
 \tid := chi.URLParam(r, "id")
-\tvar payload ${modelName}
+\tvar payload ${updateInputName}
 \tif err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 \t\twriteJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 \t\treturn
 \t}
 
-\t${lowerFirst(modelName)}Store.mu.Lock()
-\tdefer ${lowerFirst(modelName)}Store.mu.Unlock()
-
-\tcurrent, ok := ${lowerFirst(modelName)}Store.items[id]
-\tif !ok {
-\t\twriteJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+\tupdated, err := routes.store.Update${modelName}(r.Context(), id, payload)
+\tif err != nil {
+\t\tif errors.Is(err, ${notFoundName}) {
+\t\t\twriteJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+\t\t\treturn
+\t\t}
+\n\t\twriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to update record"})
 \t\treturn
 \t}
 
-${updateAssignments.join("\n")}
-\t${lowerFirst(modelName)}Store.items[id] = current
-\twriteJSON(w, http.StatusOK, current)
+\twriteJSON(w, http.StatusOK, updated)
 }
 
-func delete${modelName}(w http.ResponseWriter, r *http.Request) {
+func (routes ${routeTypeName}) delete${modelName}(w http.ResponseWriter, r *http.Request) {
 \tid := chi.URLParam(r, "id")
-
-\t${lowerFirst(modelName)}Store.mu.Lock()
-\tdefer ${lowerFirst(modelName)}Store.mu.Unlock()
-
-\tif _, ok := ${lowerFirst(modelName)}Store.items[id]; !ok {
-\t\twriteJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+\tif err := routes.store.Delete${modelName}(r.Context(), id); err != nil {
+\t\tif errors.Is(err, ${notFoundName}) {
+\t\t\twriteJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+\t\t\treturn
+\t\t}
+\n\t\twriteJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to delete record"})
 \t\treturn
 \t}
 
-\tdelete(${lowerFirst(modelName)}Store.items, id)
 \tw.WriteHeader(http.StatusNoContent)
+}
+
+func (store *${postgresStoreTypeName}) List${modelName}s(ctx context.Context) ([]${modelName}, error) {
+\trows, err := store.db.QueryContext(ctx, ${quoteGoString(renderListQuery(tableName, entityFields))})
+\tif err != nil {
+\t\treturn nil, fmt.Errorf("list ${variableName}s: %w", err)
+\t}
+\tdefer rows.Close()
+
+\titems := make([]${modelName}, 0)
+\tfor rows.Next() {
+\t\tvar item ${modelName}
+\t\tif err := rows.Scan(${scanArgs}); err != nil {
+\t\t\treturn nil, fmt.Errorf("scan ${variableName}: %w", err)
+\t\t}
+\t\titems = append(items, item)
+\t}
+
+\tif err := rows.Err(); err != nil {
+\t\treturn nil, fmt.Errorf("iterate ${variableName}s: %w", err)
+\t}
+
+\treturn items, nil
+}
+
+func (store *${postgresStoreTypeName}) Create${modelName}(ctx context.Context, input ${createInputName}) (${modelName}, error) {
+\tvar item ${modelName}
+\tif err := store.db.QueryRowContext(
+\t\tctx,
+\t\t${quoteGoString(renderInsertQuery(tableName, entityFields))},${insertArgs.length > 0 ? `\n\t\t${insertArgs.join(",\n\t\t")},` : ""}
+\t).Scan(${scanArgs}); err != nil {
+\t\treturn ${modelName}{}, fmt.Errorf("create ${variableName}: %w", err)
+\t}
+
+\treturn item, nil
+}
+
+func (store *${postgresStoreTypeName}) Update${modelName}(ctx context.Context, id string, input ${updateInputName}) (${modelName}, error) {
+${entityFields.length === 0 ? `\tvar persisted ${modelName}\n\tif err := store.db.QueryRowContext(\n\t\tctx,\n\t\t${quoteGoString(`SELECT ${returningColumns} FROM ${tableName} WHERE id = $1`)},\n\t\tid,\n\t).Scan(${persistedScanArgs}); err != nil {\n\t\tif errors.Is(err, sql.ErrNoRows) {\n\t\t\treturn ${modelName}{}, ${notFoundName}\n\t\t}\n\n\t\treturn ${modelName}{}, fmt.Errorf("load ${variableName}: %w", err)\n\t}\n\n\treturn persisted, nil` : `\tvar persisted ${modelName}\n\tif err := store.db.QueryRowContext(\n\t\tctx,\n\t\t${quoteGoString(`UPDATE ${tableName} SET\n${updateAssignments.join(",\n")}\n\t\tWHERE id = $1\n\t\tRETURNING ${returningColumns}`)},\n\t\tid,\n\t\t${updateArgs.join(",\n\t\t")},\n\t).Scan(${persistedScanArgs}); err != nil {\n\t\tif errors.Is(err, sql.ErrNoRows) {\n\t\t\treturn ${modelName}{}, ${notFoundName}\n\t\t}\n\n\t\treturn ${modelName}{}, fmt.Errorf("update ${variableName}: %w", err)\n\t}\n\n${updateCopyLines.join("\n")}\n\n\treturn persisted, nil`}
+}
+
+func (store *${postgresStoreTypeName}) Delete${modelName}(ctx context.Context, id string) error {
+\tresult, err := store.db.ExecContext(ctx, ${quoteGoString(`DELETE FROM ${tableName} WHERE id = $1`)}, id)
+\tif err != nil {
+\t\treturn fmt.Errorf("delete ${variableName}: %w", err)
+\t}
+
+\tdeleted, err := result.RowsAffected()
+\tif err != nil {
+\t\treturn fmt.Errorf("delete ${variableName}: %w", err)
+\t}
+\tif deleted == 0 {
+\t\treturn ${notFoundName}
+\t}
+
+\treturn nil
+}
+
+func nullableString(value *string) any {
+\tif value == nil {
+\t\treturn nil
+\t}
+
+\treturn *value
 }
 `;
 }
 
-function renderGeneratedRoutesTest(resourceName: string): string {
+function renderGeneratedRoutesTest(resourceName: string, entityName: string, fields: string[]): string {
+  const modelName = toGoIdentifier(entityName);
+  const routeFactoryName = `newGenerated${modelName}Routes`;
+  const storeTypeName = `stub${modelName}Store`;
+  const createInputName = `create${modelName}Input`;
+  const updateInputName = `update${modelName}Input`;
+  const entityFields = normalizedEntityFields(fields);
+  const fieldJsonEntries = entityFields.map((field) => `"${toJsonName(field)}":"${sampleFieldValue(field)}"`);
+  const updateField = entityFields[0];
+  const updateJson = updateField
+    ? `{"${toJsonName(updateField)}":"Updated ${toRussianFieldLabel(toJsonName(updateField)).toLowerCase()}"}`
+    : "{}";
+  const createAssignments = entityFields.map((field) => {
+    const goField = toGoIdentifier(field);
+    return `\titem.${goField} = input.${goField}`;
+  });
+  const updateAssignments = entityFields.map((field) => {
+    const goField = toGoIdentifier(field);
+    return `\tif input.${goField} != nil {\n\t\tcurrent.${goField} = *input.${goField}\n\t}`;
+  });
+
   return `package http
 
 import (
 \t"bytes"
+\t"context"
 \t"net/http"
 \t"net/http/httptest"
+\t"strconv"
 \t"testing"
 )
 
-func TestGeneratedResourceCRUD(t *testing.T) {
-\trouter := NewRouter()
+type ${storeTypeName} struct {
+\tnextID int
+\titems  map[string]${modelName}
+}
 
-\tcreateRequest := httptest.NewRequest(http.MethodPost, "/api/${resourceName}", bytes.NewBufferString(\`{"title":"Example","author":"Author","genre":"Fiction","status":"planned"}\`))
+func new${storeTypeName}() *${storeTypeName} {
+\treturn &${storeTypeName}{
+\t\tnextID: 1,
+\t\titems:  map[string]${modelName}{},
+\t}
+}
+
+func (store *${storeTypeName}) List${modelName}s(context.Context) ([]${modelName}, error) {
+\titems := make([]${modelName}, 0, len(store.items))
+\tfor _, item := range store.items {
+\t\titems = append(items, item)
+\t}
+\n\treturn items, nil
+}
+
+func (store *${storeTypeName}) Create${modelName}(ctx context.Context, input ${createInputName}) (${modelName}, error) {
+\titem := ${modelName}{
+\t\tId: strconv.Itoa(store.nextID),
+\t}
+${createAssignments.join("\n")}
+\tstore.items[item.Id] = item
+\tstore.nextID++
+\treturn item, nil
+}
+
+func (store *${storeTypeName}) Update${modelName}(ctx context.Context, id string, input ${updateInputName}) (${modelName}, error) {
+\tcurrent, ok := store.items[id]
+\tif !ok {
+\t\treturn ${modelName}{}, err${modelName}NotFound
+\t}
+${updateAssignments.join("\n")}
+\tstore.items[id] = current
+\treturn current, nil
+}
+
+func (store *${storeTypeName}) Delete${modelName}(ctx context.Context, id string) error {
+\tif _, ok := store.items[id]; !ok {
+\t\treturn err${modelName}NotFound
+\t}
+\n\tdelete(store.items, id)
+\treturn nil
+}
+
+func TestGeneratedResourceCRUD(t *testing.T) {
+\trouter := NewRouter(${routeFactoryName}(new${storeTypeName}()))
+
+\tcreateRequest := httptest.NewRequest(http.MethodPost, "/api/${resourceName}", bytes.NewBufferString(\`${renderJSONBody(fieldJsonEntries)}\`))
 \tcreateResponse := httptest.NewRecorder()
 \trouter.ServeHTTP(createResponse, createRequest)
 \tif createResponse.Code != http.StatusCreated {
 \t\tt.Fatalf("expected 201, got %d", createResponse.Code)
+\t}
+
+\tupdateRequest := httptest.NewRequest(http.MethodPatch, "/api/${resourceName}/1", bytes.NewBufferString(\`${updateJson}\`))
+\tupdateResponse := httptest.NewRecorder()
+\trouter.ServeHTTP(updateResponse, updateRequest)
+\tif updateResponse.Code != http.StatusOK {
+\t\tt.Fatalf("expected 200, got %d", updateResponse.Code)
 \t}
 
 \tlistRequest := httptest.NewRequest(http.MethodGet, "/api/${resourceName}", nil)
@@ -225,6 +470,13 @@ func TestGeneratedResourceCRUD(t *testing.T) {
 \trouter.ServeHTTP(listResponse, listRequest)
 \tif listResponse.Code != http.StatusOK {
 \t\tt.Fatalf("expected 200, got %d", listResponse.Code)
+\t}
+
+\tdeleteRequest := httptest.NewRequest(http.MethodDelete, "/api/${resourceName}/1", nil)
+\tdeleteResponse := httptest.NewRecorder()
+\trouter.ServeHTTP(deleteResponse, deleteRequest)
+\tif deleteResponse.Code != http.StatusNoContent {
+\t\tt.Fatalf("expected 204, got %d", deleteResponse.Code)
 \t}
 }
 `;
@@ -235,7 +487,7 @@ function renderApiClient(resourceName: string, entityName: string, fields: strin
   const typeFields = unique(["id", ...fields]).map((field) => {
     return `  ${toJsonName(field)}: string;`;
   });
-  const createFields = unique(fields).map((field) => {
+  const createFields = normalizedEntityFields(fields).map((field) => {
     return `  ${toJsonName(field)}: string;`;
   });
 
@@ -276,7 +528,7 @@ export async function create${modelName}(input: Create${modelName}Input): Promis
 function renderFrontendApp(entityName: string, fields: string[]): string {
   const modelName = toGoIdentifier(entityName);
   const title = entityName === "Book" ? "Учет книг" : `Управление ${entityName}`;
-  const uniqueFields = unique(fields);
+  const uniqueFields = normalizedEntityFields(fields);
   const initialForm = uniqueFields.map((field) => `${toJsonName(field)}: ""`).join(", ");
   const formInputs = uniqueFields.map((field) => {
     const jsonName = toJsonName(field);
@@ -533,6 +785,52 @@ th {
 }
 `;
 }
+
+function renderListQuery(tableName: string, fields: string[]): string {
+  return `SELECT ${renderReturningColumns(fields)} FROM ${tableName} ORDER BY id`;
+}
+
+function renderInsertQuery(tableName: string, fields: string[]): string {
+  if (fields.length === 0) {
+    return `INSERT INTO ${tableName} DEFAULT VALUES RETURNING ${renderReturningColumns(fields)}`;
+  }
+
+  const columns = fields.map(toSqlName).join(", ");
+  const values = fields.map((_, index) => `$${index + 1}`).join(", ");
+  return `INSERT INTO ${tableName} (${columns}) VALUES (${values}) RETURNING ${renderReturningColumns(fields)}`;
+}
+
+function renderReturningColumns(fields: string[]): string {
+  return ["id::text", ...fields.map(toSqlName)].join(", ");
+}
+
+function renderJSONBody(entries: string[]): string {
+  return `{${entries.join(",")}}`;
+}
+
+function normalizedEntityFields(fields: string[]): string[] {
+  return unique(fields).filter((field) => toJsonName(field) !== "id");
+}
+
+function sampleFieldValue(field: string): string {
+  const values: Record<string, string> = {
+    title: "Example",
+    author: "Author",
+    genre: "Fiction",
+    status: "planned",
+    reading_status: "planned",
+    description: "Description",
+    content: "Content",
+    assignee: "User"
+  };
+
+  return values[toJsonName(field)] ?? "Value";
+}
+
+function quoteGoString(value: string): string {
+  return JSON.stringify(value);
+}
+
 function toGoIdentifier(value: string): string {
   return value
     .split(/[^a-zA-Z0-9]+/)
@@ -546,7 +844,19 @@ function lowerFirst(value: string): string {
 }
 
 function toJsonName(value: string): string {
-  return value.replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_+|_+$/g, "").toLowerCase();
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+}
+
+function toSqlName(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
 }
 
 function toRussianFieldLabel(field: string): string {
@@ -555,6 +865,7 @@ function toRussianFieldLabel(field: string): string {
     author: "Автор",
     genre: "Жанр",
     status: "Статус",
+    reading_status: "Статус чтения",
     description: "Описание",
     content: "Содержание",
     assignee: "Ответственный"

@@ -79,7 +79,13 @@ npm run scaffold -- --spec ./examples/book-tracker.spec.json --out ./generated-p
 npm run scaffold -- plan --spec ./generated-projects/book-tracker/SPEC.json --out ./generated-projects/book-tracker/PLAN.json
 ```
 
-После формирования плана можно сгенерировать Go backend-маршруты:
+После формирования плана можно сгенерировать SQL-миграции для backend:
+
+```bash
+npm run scaffold -- generate-database --project ./generated-projects/book-tracker
+```
+
+Затем можно сгенерировать Go backend-маршруты и SQL-доступ:
 
 ```bash
 npm run scaffold -- generate-backend --project ./generated-projects/book-tracker
@@ -101,6 +107,10 @@ npm run validate-project -- --project ./generated-projects/book-tracker
 
 Валидатор выполняет базовые проверки Docker Compose, Go backend и frontend, а
 результат сохраняет в `REVIEW.md` внутри директории проекта.
+
+Сгенерированный backend использует `database/sql` c драйвером `pgx`, применяет
+встроенные SQL-миграции на старте и хранит CRUD-данные в PostgreSQL, а не в
+in-memory store.
 
 На первом запуске проверка frontend может потребовать доступ к npm registry,
 потому что валидатор устанавливает зависимости в созданном проекте.

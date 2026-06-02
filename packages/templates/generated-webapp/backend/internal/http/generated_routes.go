@@ -1,6 +1,7 @@
 package http
 
-import "github.com/go-chi/chi/v5"
+import "database/sql"
 
-func registerGeneratedRoutes(router chi.Router) {
+func NewGeneratedRouteRegistrar(_ *sql.DB) GeneratedRouteRegistrar {
+	return noopGeneratedRouteRegistrar{}
 }

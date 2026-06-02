@@ -19,3 +19,6 @@ docker compose up --build
 ```bash
 ./scripts/test.sh
 ```
+
+Backend поднимает PostgreSQL-подключение по `DATABASE_URL`, применяет
+встроенные миграции из `backend/migrations` и затем запускает HTTP API.

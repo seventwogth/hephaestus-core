@@ -7,9 +7,11 @@ import {
   parseRequirementsArgs,
   parsePlanArgs,
   parseGenerateBackendArgs,
+  parseGenerateDatabaseArgs,
   parseGenerateFrontendArgs,
   parseValidateArgs,
   generateBackendFromProject,
+  generateDatabaseFromProject,
   generateFrontendFromProject,
   saveArchitecturePlan,
   saveRequirementsSpec,
@@ -53,6 +55,12 @@ describe("scaffold CLI", () => {
 
   it("parses backend generation arguments", () => {
     expect(parseGenerateBackendArgs(["--project", "app"])).toEqual({
+      projectDir: "app"
+    });
+  });
+
+  it("parses database generation arguments", () => {
+    expect(parseGenerateDatabaseArgs(["--project", "app"])).toEqual({
       projectDir: "app"
     });
   });
@@ -125,6 +133,33 @@ describe("scaffold CLI", () => {
 
       expect(files).toContain("backend/internal/http/generated_routes.go");
       await expect(readFile(join(outDir, "backend/internal/http/generated_routes.go"), "utf8")).resolves.toContain("/books");
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("generates database files for a scaffolded project", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "hephaestus-cli-"));
+    const specPath = join(rootDir, "SPEC.json");
+    const outDir = join(rootDir, "book-tracker");
+
+    try {
+      await saveRequirementsSpec({
+        text: "Создай сервис учета книг. Пользователь должен зарегистрироваться, войти и добавлять книги.",
+        outPath: specPath
+      });
+      await scaffoldFromSpecFile({ specPath, outDir });
+      await saveArchitecturePlan({
+        specPath: join(outDir, "SPEC.json"),
+        outPath: join(outDir, "PLAN.json")
+      });
+
+      const files = await generateDatabaseFromProject({ projectDir: outDir });
+
+      expect(files).toContain("backend/migrations/0001_generated_schema.sql");
+      await expect(readFile(join(outDir, "backend/migrations/0001_generated_schema.sql"), "utf8")).resolves.toContain(
+        "CREATE TABLE IF NOT EXISTS books"
+      );
     } finally {
       await rm(rootDir, { recursive: true, force: true });
     }

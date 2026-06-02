@@ -8,7 +8,19 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 )
 
-func NewRouter() http.Handler {
+type GeneratedRouteRegistrar interface {
+	Register(router chi.Router)
+}
+
+type noopGeneratedRouteRegistrar struct{}
+
+func (noopGeneratedRouteRegistrar) Register(router chi.Router) {}
+
+func NewRouter(generated GeneratedRouteRegistrar) http.Handler {
+	if generated == nil {
+		generated = noopGeneratedRouteRegistrar{}
+	}
+
 	router := chi.NewRouter()
 	router.Use(middleware.RequestID)
 	router.Use(middleware.RealIP)
@@ -22,7 +34,7 @@ func NewRouter() http.Handler {
 		router.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		})
-		registerGeneratedRoutes(router)
+		generated.Register(router)
 	})
 
 	return router

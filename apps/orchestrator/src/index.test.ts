@@ -183,13 +183,18 @@ describe("Orchestrator", () => {
         acceptanceCriteria: ["User can manage only their own books"]
       });
       await orchestrator.planProject(projectDir);
+      await orchestrator.generateDatabaseStage(projectDir);
       await orchestrator.generateBackendStage(projectDir);
 
       const routes = await readFile(join(projectDir, "backend/internal/http/generated_routes.go"), "utf8");
+      const migration = await readFile(join(projectDir, "backend/migrations/0001_generated_schema.sql"), "utf8");
       const tasks = JSON.parse(await readFile(join(projectDir, "TASKS.json"), "utf8"));
+      const databaseTask = tasks.tasks.find((task: { id: string }) => task.id === "database");
       const backendTask = tasks.tasks.find((task: { id: string }) => task.id === "backend");
 
       expect(routes).toContain('router.Route("/books"');
+      expect(migration).toContain("CREATE TABLE IF NOT EXISTS books");
+      expect(databaseTask.status).toBe("done");
       expect(backendTask.status).toBe("done");
     } finally {
       await rm(projectDir, { recursive: true, force: true });

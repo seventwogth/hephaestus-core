@@ -3,7 +3,11 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { analyzeRequirements, createArchitecturePlan } from "@hephaestus/agents";
 import { projectSpecSchema } from "@hephaestus/contracts";
-import { generateGoBackend, generateReactFrontend } from "@hephaestus/project-generator";
+import {
+  generateDatabaseArtifacts,
+  generateGoBackend,
+  generateReactFrontend
+} from "@hephaestus/project-generator";
 import { type ValidationCheck, validateGeneratedWebApp } from "@hephaestus/project-validator";
 import { FileProjectStateStore, Orchestrator } from "./index.js";
 
@@ -29,6 +33,10 @@ export interface PlanCliOptions {
 }
 
 export interface GenerateBackendCliOptions {
+  projectDir: string;
+}
+
+export interface GenerateDatabaseCliOptions {
   projectDir: string;
 }
 
@@ -103,6 +111,16 @@ export function parseGenerateBackendArgs(args: string[]): GenerateBackendCliOpti
   return { projectDir };
 }
 
+export function parseGenerateDatabaseArgs(args: string[]): GenerateDatabaseCliOptions {
+  const projectDir = readOption(args, "--project");
+
+  if (!projectDir) {
+    throw new Error("Использование: hephaestus-scaffold generate-database --project ./generated-projects/my-app");
+  }
+
+  return { projectDir };
+}
+
 export function parseGenerateFrontendArgs(args: string[]): GenerateFrontendCliOptions {
   const projectDir = readOption(args, "--project");
 
@@ -157,6 +175,17 @@ export async function generateBackendFromProject(options: GenerateBackendCliOpti
   return files.map((file) => file.path);
 }
 
+export async function generateDatabaseFromProject(
+  options: GenerateDatabaseCliOptions
+): Promise<string[]> {
+  const projectDir = resolve(options.projectDir);
+  const rawPlan = await readFile(resolve(projectDir, "PLAN.json"), "utf8");
+  const plan = JSON.parse(rawPlan);
+  const files = await generateDatabaseArtifacts({ projectDir, plan });
+
+  return files.map((file) => file.path);
+}
+
 export async function generateFrontendFromProject(options: GenerateFrontendCliOptions): Promise<string[]> {
   const projectDir = resolve(options.projectDir);
   const rawPlan = await readFile(resolve(projectDir, "PLAN.json"), "utf8");
@@ -193,6 +222,12 @@ async function main(): Promise<void> {
   if (args[0] === "generate-backend") {
     const files = await generateBackendFromProject(parseGenerateBackendArgs(args.slice(1)));
     console.log(`Backend сгенерирован: ${files.join(", ")}`);
+    return;
+  }
+
+  if (args[0] === "generate-database") {
+    const files = await generateDatabaseFromProject(parseGenerateDatabaseArgs(args.slice(1)));
+    console.log(`Database артефакты сгенерированы: ${files.join(", ")}`);
     return;
   }
 

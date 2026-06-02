@@ -10,7 +10,7 @@ func TestHealth(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/health", nil)
 	response := httptest.NewRecorder()
 
-	NewRouter().ServeHTTP(response, request)
+	NewRouter(nil).ServeHTTP(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", response.Code)
