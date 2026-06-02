@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { analyzeRequirements } from "@hephaestus/agents";
 import {
   createLocalModelProvider,
@@ -87,6 +87,25 @@ export class InMemoryTelegramSessionStore implements TelegramSessionStore {
   }
 }
 
+export class FileTelegramSessionStore implements TelegramSessionStore {
+  constructor(private readonly filePath: string) {}
+
+  async read(chatId: number): Promise<TelegramSession | null> {
+    const sessions = await this.readAll();
+    return sessions[String(chatId)] ?? null;
+  }
+
+  async write(session: TelegramSession): Promise<void> {
+    const sessions = await this.readAll();
+    sessions[String(session.chatId)] = session;
+    await writeJsonFile(this.filePath, sessions);
+  }
+
+  private async readAll(): Promise<Record<string, TelegramSession>> {
+    return readJsonFile(this.filePath, {});
+  }
+}
+
 export interface BootstrapProjectInput {
   chatId: number;
   description: string;
@@ -101,6 +120,198 @@ export interface BootstrappedProject {
 
 export interface ProjectBootstrapper {
   bootstrap(input: BootstrapProjectInput): Promise<BootstrappedProject>;
+}
+
+export type ProjectJobStatus = "pending" | "running" | "completed" | "failed";
+
+export interface ProjectJob {
+  id: string;
+  chatId: number;
+  description: string;
+  selectedModel: ModelOption;
+  status: ProjectJobStatus;
+  queuedAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  projectDir?: string;
+  projectName?: string;
+  error?: string;
+}
+
+export interface ProjectJobQueue {
+  enqueue(input: BootstrapProjectInput): Promise<ProjectJob>;
+  listByChat(chatId: number): Promise<ProjectJob[]>;
+  claimNext(): Promise<ProjectJob | null>;
+  complete(jobId: string, project: BootstrappedProject): Promise<ProjectJob>;
+  fail(jobId: string, error: string): Promise<ProjectJob>;
+}
+
+export class InMemoryProjectJobQueue implements ProjectJobQueue {
+  private readonly jobs: ProjectJob[] = [];
+
+  async enqueue(input: BootstrapProjectInput): Promise<ProjectJob> {
+    const job = createProjectJob(input);
+    this.jobs.push(job);
+    return job;
+  }
+
+  async listByChat(chatId: number): Promise<ProjectJob[]> {
+    return this.jobs
+      .filter((job) => job.chatId === chatId)
+      .slice()
+      .sort((left, right) => right.queuedAt.localeCompare(left.queuedAt));
+  }
+
+  async claimNext(): Promise<ProjectJob | null> {
+    const index = this.jobs.findIndex((job) => job.status === "pending");
+    if (index === -1) {
+      return null;
+    }
+
+    const claimed = {
+      ...this.jobs[index],
+      status: "running" as const,
+      startedAt: new Date().toISOString(),
+      error: undefined
+    };
+    this.jobs[index] = claimed;
+    return claimed;
+  }
+
+  async complete(jobId: string, project: BootstrappedProject): Promise<ProjectJob> {
+    return this.update(jobId, {
+      status: "completed",
+      finishedAt: new Date().toISOString(),
+      projectDir: project.projectDir,
+      projectName: project.projectName,
+      error: undefined
+    });
+  }
+
+  async fail(jobId: string, error: string): Promise<ProjectJob> {
+    return this.update(jobId, {
+      status: "failed",
+      finishedAt: new Date().toISOString(),
+      error
+    });
+  }
+
+  private async update(jobId: string, patch: Partial<ProjectJob>): Promise<ProjectJob> {
+    const index = this.jobs.findIndex((job) => job.id === jobId);
+    if (index === -1) {
+      throw new Error(`Unknown project job: ${jobId}`);
+    }
+
+    const updated = { ...this.jobs[index], ...patch };
+    this.jobs[index] = updated;
+    return updated;
+  }
+}
+
+export class FileProjectJobQueue implements ProjectJobQueue {
+  constructor(private readonly filePath: string) {}
+
+  async enqueue(input: BootstrapProjectInput): Promise<ProjectJob> {
+    const job = createProjectJob(input);
+    const jobs = await this.readAll();
+    jobs.push(job);
+    await this.writeAll(jobs);
+    return job;
+  }
+
+  async listByChat(chatId: number): Promise<ProjectJob[]> {
+    const jobs = await this.readAll();
+    return jobs
+      .filter((job) => job.chatId === chatId)
+      .sort((left, right) => right.queuedAt.localeCompare(left.queuedAt));
+  }
+
+  async claimNext(): Promise<ProjectJob | null> {
+    const jobs = await this.readAll();
+    const index = jobs.findIndex((job) => job.status === "pending");
+    if (index === -1) {
+      return null;
+    }
+
+    const claimed = {
+      ...jobs[index],
+      status: "running" as const,
+      startedAt: new Date().toISOString(),
+      error: undefined
+    };
+    jobs[index] = claimed;
+    await this.writeAll(jobs);
+    return claimed;
+  }
+
+  async complete(jobId: string, project: BootstrappedProject): Promise<ProjectJob> {
+    return this.update(jobId, {
+      status: "completed",
+      finishedAt: new Date().toISOString(),
+      projectDir: project.projectDir,
+      projectName: project.projectName,
+      error: undefined
+    });
+  }
+
+  async fail(jobId: string, error: string): Promise<ProjectJob> {
+    return this.update(jobId, {
+      status: "failed",
+      finishedAt: new Date().toISOString(),
+      error
+    });
+  }
+
+  private async update(jobId: string, patch: Partial<ProjectJob>): Promise<ProjectJob> {
+    const jobs = await this.readAll();
+    const index = jobs.findIndex((job) => job.id === jobId);
+    if (index === -1) {
+      throw new Error(`Unknown project job: ${jobId}`);
+    }
+
+    const updated = { ...jobs[index], ...patch };
+    jobs[index] = updated;
+    await this.writeAll(jobs);
+    return updated;
+  }
+
+  private async readAll(): Promise<ProjectJob[]> {
+    return readJsonFile(this.filePath, [] as ProjectJob[]);
+  }
+
+  private async writeAll(jobs: ProjectJob[]): Promise<void> {
+    await writeJsonFile(this.filePath, jobs);
+  }
+}
+
+export interface PollingOffsetStore {
+  read(): Promise<number | undefined>;
+  write(offset: number): Promise<void>;
+}
+
+export class InMemoryPollingOffsetStore implements PollingOffsetStore {
+  private offset: number | undefined;
+
+  async read(): Promise<number | undefined> {
+    return this.offset;
+  }
+
+  async write(offset: number): Promise<void> {
+    this.offset = offset;
+  }
+}
+
+export class FilePollingOffsetStore implements PollingOffsetStore {
+  constructor(private readonly filePath: string) {}
+
+  async read(): Promise<number | undefined> {
+    const payload = await readJsonFile<{ offset?: number }>(this.filePath, {});
+    return payload.offset;
+  }
+
+  async write(offset: number): Promise<void> {
+    await writeJsonFile(this.filePath, { offset });
+  }
 }
 
 export interface LocalProjectBootstrapperOptions {
@@ -156,7 +367,7 @@ export class LocalProjectBootstrapper implements ProjectBootstrapper {
 export interface HephaestusTelegramBotOptions {
   models: ModelOption[];
   sessionStore: TelegramSessionStore;
-  bootstrapper: ProjectBootstrapper;
+  jobQueue: ProjectJobQueue;
 }
 
 export class HephaestusTelegramBot {
@@ -193,10 +404,11 @@ export class HephaestusTelegramBot {
         sendMessage(
           message.chat.id,
           [
-            "Hephaestus Telegram MVP.",
+            "Hephaestus Telegram control bot.",
             "Команды:",
             "/new — начать новый проект",
-            "/models — показать доступные модели"
+            "/models — показать доступные модели",
+            "/status — показать последние задания"
           ].join("\n")
         )
       ];
@@ -224,13 +436,18 @@ export class HephaestusTelegramBot {
       ];
     }
 
+    if (text === "/status") {
+      const jobs = await this.options.jobQueue.listByChat(message.chat.id);
+      return [sendMessage(message.chat.id, renderJobStatus(jobs))];
+    }
+
     const session = await this.options.sessionStore.read(message.chat.id);
     if (!session || session.stage !== "awaiting_description" || !session.selectedModelId) {
       return [sendMessage(message.chat.id, "Сначала вызови /new и выбери модель.")];
     }
 
     const selectedModel = requireModel(this.options.models, session.selectedModelId);
-    const project = await this.options.bootstrapper.bootstrap({
+    const job = await this.options.jobQueue.enqueue({
       chatId: message.chat.id,
       description: text,
       selectedModel
@@ -246,10 +463,9 @@ export class HephaestusTelegramBot {
       sendMessage(
         message.chat.id,
         [
-          `Проект создан: ${project.projectName}`,
-          `Модель: ${project.selectedModel.label}`,
-          `Директория: ${project.projectDir}`,
-          "Сгенерированы SPEC, PLAN, миграции, backend и frontend."
+          `Проект поставлен в очередь: ${job.id}`,
+          `Модель: ${selectedModel.label}`,
+          "Когда генерация завершится, бот пришлет отдельное сообщение со статусом и директорией проекта."
         ].join("\n")
       )
     ];
@@ -366,12 +582,15 @@ export class TelegramHttpApi implements TelegramApi {
 export class TelegramPollingRuntime {
   constructor(
     private readonly api: TelegramApi,
-    private readonly bot: HephaestusTelegramBot
+    private readonly bot: HephaestusTelegramBot,
+    private readonly jobRunner?: ProjectJobRunner,
+    private readonly offsetStore: PollingOffsetStore = new InMemoryPollingOffsetStore()
   ) {}
 
   async runOnce(offset?: number): Promise<number | undefined> {
-    const updates = await this.api.getUpdates(offset);
-    let nextOffset = offset;
+    const currentOffset = offset ?? await this.offsetStore.read();
+    const updates = await this.api.getUpdates(currentOffset);
+    let nextOffset = currentOffset;
 
     for (const update of updates) {
       const actions = await this.bot.handleUpdate(update);
@@ -385,9 +604,71 @@ export class TelegramPollingRuntime {
       }
 
       nextOffset = update.update_id + 1;
+      await this.offsetStore.write(nextOffset);
+    }
+
+    if (this.jobRunner) {
+      await this.jobRunner.runNext();
     }
 
     return nextOffset;
+  }
+}
+
+export class ProjectJobRunner {
+  constructor(
+    private readonly queue: ProjectJobQueue,
+    private readonly bootstrapper: ProjectBootstrapper,
+    private readonly api: TelegramApi
+  ) {}
+
+  async runNext(): Promise<ProjectJob | null> {
+    const job = await this.queue.claimNext();
+    if (!job) {
+      return null;
+    }
+
+    await this.api.sendMessage(
+      sendMessage(
+        job.chatId,
+        [`Запущена генерация проекта: ${job.id}`, `Модель: ${job.selectedModel.label}`].join("\n")
+      )
+    );
+
+    try {
+      const project = await this.bootstrapper.bootstrap({
+        chatId: job.chatId,
+        description: job.description,
+        selectedModel: job.selectedModel
+      });
+      const completedJob = await this.queue.complete(job.id, project);
+
+      await this.api.sendMessage(
+        sendMessage(
+          job.chatId,
+          [
+            `Проект создан: ${project.projectName}`,
+            `Задание: ${completedJob.id}`,
+            `Модель: ${project.selectedModel.label}`,
+            `Директория: ${project.projectDir}`
+          ].join("\n")
+        )
+      );
+
+      return completedJob;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const failedJob = await this.queue.fail(job.id, message);
+
+      await this.api.sendMessage(
+        sendMessage(
+          job.chatId,
+          [`Генерация проекта завершилась ошибкой: ${failedJob.id}`, message].join("\n")
+        )
+      );
+
+      return failedJob;
+    }
   }
 }
 
@@ -449,6 +730,20 @@ function renderModels(models: ModelOption[], selectedModelId?: string): string {
   ].join("\n");
 }
 
+function renderJobStatus(jobs: ProjectJob[]): string {
+  if (jobs.length === 0) {
+    return "Заданий пока нет.";
+  }
+
+  return [
+    "Последние задания:",
+    ...jobs.slice(0, 5).map((job) => {
+      const details = job.projectDir ? ` — ${job.projectDir}` : job.error ? ` — ${job.error}` : "";
+      return `- ${job.id}: ${translateJobStatus(job.status)} (${job.selectedModel.label})${details}`;
+    })
+  ].join("\n");
+}
+
 function resolveModelRuntime(
   model: ModelOption,
   env: Record<string, string | undefined> = process.env
@@ -487,6 +782,31 @@ async function parseTelegramResponse(response: Response): Promise<{ ok: boolean;
   return payload;
 }
 
+function createProjectJob(input: BootstrapProjectInput): ProjectJob {
+  const now = new Date().toISOString();
+  return {
+    id: `job-${now.replaceAll(/[:.]/g, "").replace("T", "-").replace("Z", "")}`,
+    chatId: input.chatId,
+    description: input.description,
+    selectedModel: input.selectedModel,
+    status: "pending",
+    queuedAt: now
+  };
+}
+
+function translateJobStatus(status: ProjectJobStatus): string {
+  switch (status) {
+    case "pending":
+      return "в очереди";
+    case "running":
+      return "в работе";
+    case "completed":
+      return "завершено";
+    case "failed":
+      return "ошибка";
+  }
+}
+
 function timestampLabel(date: Date): string {
   const year = date.getUTCFullYear();
   const month = String(date.getUTCMonth() + 1).padStart(2, "0");
@@ -509,4 +829,21 @@ async function bootstrapDeterministicProject(
   await orchestrator.generateBackendStage(projectDir);
   await orchestrator.generateFrontendStage(projectDir);
   return spec;
+}
+
+async function readJsonFile<T>(path: string, fallback: T): Promise<T> {
+  try {
+    const raw = await readFile(path, "utf8");
+    return JSON.parse(raw) as T;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return fallback;
+    }
+    throw error;
+  }
+}
+
+async function writeJsonFile(path: string, value: unknown): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }

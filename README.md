@@ -41,6 +41,117 @@ npm test
 npm run build
 ```
 
+## Быстрый старт через Telegram
+
+Ниже минимальный путь для обычного пользователя. Предполагается одна машина,
+которая постоянно включена и на которой будут крутиться Ollama, Hephaestus и
+Telegram-бот. Управлять проектами потом можно с телефона или любого другого
+устройства через Telegram.
+
+### 1. Подготовить хост-машину
+
+Нужно установить:
+
+- `git`
+- `node` 20+
+- `npm`
+- `docker` и `docker compose`
+- `go` 1.22+
+- `ollama`
+
+### 2. Скачать репозиторий и установить зависимости
+
+```bash
+git clone https://github.com/seventwogth/hephaestus-core.git
+cd hephaestus-core
+npm install
+```
+
+### 3. Поднять Ollama и скачать модель
+
+Запустить Ollama:
+
+```bash
+ollama serve
+```
+
+В отдельном терминале скачать модель:
+
+```bash
+ollama pull qwen2.5-coder:14b
+```
+
+Если машина слабее, можно взять более лёгкую модель, например
+`qwen2.5-coder:7b`.
+
+### 4. Создать Telegram-бота
+
+В Telegram открыть `@BotFather`, создать нового бота и сохранить токен.
+
+### 5. Настроить переменные окружения
+
+Минимальная конфигурация:
+
+```bash
+export TELEGRAM_BOT_TOKEN="сюда-токен-бота"
+export HEPHAESTUS_PROJECTS_DIR="$HOME/hephaestus-projects"
+export HEPHAESTUS_BOT_STATE_DIR="$HOME/hephaestus-bot-state"
+export HEPHAESTUS_AVAILABLE_MODELS="qwen2.5-coder:7b|Qwen 7B|Быстрее,qwen2.5-coder:14b|Qwen 14B|Качественнее"
+```
+
+Необязательные переменные:
+
+- `HEPHAESTUS_OLLAMA_BASE_URL` — адрес Ollama API, по умолчанию `http://127.0.0.1:11434`
+- `HEPHAESTUS_MODEL_RUNTIME_MAP` — ручное сопоставление id модели и runtime, например `quality=ollama:qwen2.5-coder:14b`
+- `HEPHAESTUS_OLLAMA_TIMEOUT_MS` — таймаут одного LLM agent run
+
+### 6. Запустить Telegram-бота
+
+```bash
+npm run telegram-bot
+```
+
+Бот начнёт:
+
+- принимать команды из Telegram
+- сохранять сессии на диск
+- ставить проекты в persistent queue
+- после рестарта продолжать обрабатывать pending jobs
+
+### 7. Создать первый проект через Telegram
+
+В чате с ботом:
+
+1. отправить `/start`
+2. отправить `/new`
+3. выбрать модель
+4. одним сообщением отправить описание проекта
+5. дождаться уведомления о старте и завершении job
+6. при необходимости отправить `/status`
+
+После успешной генерации бот пришлёт:
+
+- id задания
+- имя проекта
+- модель
+- абсолютный путь к директории проекта на хост-машине
+
+### 8. Запустить сгенерированный проект
+
+На хост-машине перейти в директорию проекта, которую прислал бот:
+
+```bash
+cd /путь/из/сообщения/бота
+docker compose up --build
+```
+
+### 9. Что важно учитывать
+
+- хост-машина должна оставаться включённой, пока идёт генерация
+- Telegram управляет процессом, но весь код генерируется локально на хосте
+- frontend validation может потребовать доступ к npm registry
+- чем сильнее локальная модель, тем выше шанс получить рабочий проект без дополнительных fixer-проходов
+
 Шаблон генерируемого приложения находится здесь:
 
 ```text
@@ -175,6 +286,7 @@ TELEGRAM_BOT_TOKEN=... npm run telegram-bot
 
 - `TELEGRAM_BOT_TOKEN` — токен Telegram-бота
 - `HEPHAESTUS_PROJECTS_DIR` — директория для создаваемых проектов, по умолчанию `./generated-projects`
+- `HEPHAESTUS_BOT_STATE_DIR` — директория для session store, queue store и polling offset
 - `HEPHAESTUS_AVAILABLE_MODELS` — список моделей в формате `id|label|description,id2|label2|description2`
 - `HEPHAESTUS_MODEL_RUNTIME_MAP` — необязательное сопоставление `modelId=stub` или `modelId=ollama:model-name`
 - `HEPHAESTUS_OLLAMA_BASE_URL` — URL локального Ollama API, по умолчанию `http://127.0.0.1:11434`
@@ -190,10 +302,20 @@ TELEGRAM_BOT_TOKEN=... npm run telegram-bot
 Текущий LLM-first flow в боте:
 
 1. бот сохраняет описание пользователя в `REQUEST.md`
-2. requirements-agent через Hermes/Ollama пишет `SPEC.json`
-3. architect-agent пишет `PLAN.json`
-4. database/backend/frontend агенты последовательно переписывают scaffold проекта
-5. все agent runs журналируются в `AGENT_RUNS.jsonl`
+2. бот кладёт запрос в persistent queue
+3. worker на хосте берет pending job и запускает bootstrap
+4. requirements-agent через Hermes/Ollama пишет `SPEC.json`
+5. architect/database/backend/frontend/integrator/documentation агенты проходят pipeline
+6. валидация и fixer loop выполняются локально на хосте
+7. все agent runs журналируются в `AGENT_RUNS.jsonl`
+8. бот присылает финальный статус и путь к проекту
+
+Доступные команды в Telegram:
+
+- `/start` — инициализировать сессию
+- `/new` — начать новый проект
+- `/models` — показать модели
+- `/status` — показать последние задания и их статусы
 
 ## ModelProvider
 

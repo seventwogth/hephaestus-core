@@ -4,12 +4,19 @@ import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import {
   createModelProviderForOption,
+  FilePollingOffsetStore,
+  FileProjectJobQueue,
+  FileTelegramSessionStore,
   HephaestusTelegramBot,
+  InMemoryProjectJobQueue,
   InMemoryTelegramSessionStore,
   LocalProjectBootstrapper,
   parseAvailableModels,
+  ProjectJobRunner,
   readSelectedModel,
-  type ProjectBootstrapper
+  TelegramPollingRuntime,
+  type ProjectBootstrapper,
+  type TelegramApi
 } from "./index.js";
 
 describe("parseAvailableModels", () => {
@@ -57,15 +64,11 @@ describe("createModelProviderForOption", () => {
 describe("HephaestusTelegramBot", () => {
   it("requests model selection before project description", async () => {
     const sessionStore = new InMemoryTelegramSessionStore();
-    const bootstrapper: ProjectBootstrapper = {
-      async bootstrap() {
-        throw new Error("should not be called");
-      }
-    };
+    const jobQueue = new InMemoryProjectJobQueue();
     const bot = new HephaestusTelegramBot({
       models: parseAvailableModels("stub|Stub,quality|Quality"),
       sessionStore,
-      bootstrapper
+      jobQueue
     });
 
     const actions = await bot.handleUpdate({
@@ -86,21 +89,12 @@ describe("HephaestusTelegramBot", () => {
 
   it("stores selected model and bootstraps a project from next message", async () => {
     const sessionStore = new InMemoryTelegramSessionStore();
+    const jobQueue = new InMemoryProjectJobQueue();
     let selectedModelId: string | null = null;
-    const bootstrapper: ProjectBootstrapper = {
-      async bootstrap(input) {
-        selectedModelId = input.selectedModel.id;
-        return {
-          projectDir: "/tmp/project",
-          projectName: "book-tracker",
-          selectedModel: input.selectedModel
-        };
-      }
-    };
     const bot = new HephaestusTelegramBot({
       models: parseAvailableModels("stub|Stub,quality|Quality"),
       sessionStore,
-      bootstrapper
+      jobQueue
     });
 
     const callbackActions = await bot.handleUpdate({
@@ -128,12 +122,166 @@ describe("HephaestusTelegramBot", () => {
       type: "answerCallbackQuery",
       callbackQueryId: "cb-1"
     });
-    expect(selectedModelId).toBe("quality");
+    const jobs = await jobQueue.listByChat(100);
+    selectedModelId = jobs[0]?.selectedModel.id ?? null;
+    expect(jobs[0]?.status).toBe("pending");
     expect(messageActions[0]).toMatchObject({
       type: "sendMessage",
       chatId: 100
     });
     expect(messageActions[0]?.text).toContain("Модель: Quality");
+    expect(messageActions[0]?.text).toContain("поставлен в очередь");
+  });
+});
+
+describe("persistent Telegram bot state", () => {
+  it("persists sessions to a file store", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "hephaestus-telegram-state-"));
+
+    try {
+      const filePath = join(rootDir, "sessions.json");
+      const store = new FileTelegramSessionStore(filePath);
+      await store.write({
+        chatId: 100,
+        stage: "awaiting_description",
+        selectedModelId: "quality"
+      });
+
+      const reloadedStore = new FileTelegramSessionStore(filePath);
+      await expect(reloadedStore.read(100)).resolves.toEqual({
+        chatId: 100,
+        stage: "awaiting_description",
+        selectedModelId: "quality"
+      });
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists queued jobs and polling offset to disk", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "hephaestus-telegram-state-"));
+
+    try {
+      const queue = new FileProjectJobQueue(join(rootDir, "jobs.json"));
+      const job = await queue.enqueue({
+        chatId: 100,
+        description: "Создай сервис книг",
+        selectedModel: { id: "quality", label: "Quality" }
+      });
+      const offsetStore = new FilePollingOffsetStore(join(rootDir, "offset.json"));
+      await offsetStore.write(42);
+
+      const reloadedQueue = new FileProjectJobQueue(join(rootDir, "jobs.json"));
+      await expect(reloadedQueue.listByChat(100)).resolves.toEqual([
+        expect.objectContaining({ id: job.id, status: "pending" })
+      ]);
+      await expect(new FilePollingOffsetStore(join(rootDir, "offset.json")).read()).resolves.toBe(42);
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("ProjectJobRunner", () => {
+  it("runs queued jobs and notifies Telegram on success", async () => {
+    const jobQueue = new InMemoryProjectJobQueue();
+    const messages: string[] = [];
+    const api: TelegramApi = {
+      async getUpdates() {
+        return [];
+      },
+      async sendMessage(action) {
+        messages.push(action.text);
+      },
+      async answerCallbackQuery() {}
+    };
+    const bootstrapper: ProjectBootstrapper = {
+      async bootstrap(input) {
+        return {
+          projectDir: "/tmp/project",
+          projectName: "book-tracker",
+          selectedModel: input.selectedModel
+        };
+      }
+    };
+    await jobQueue.enqueue({
+      chatId: 100,
+      description: "Создай сервис книг",
+      selectedModel: { id: "quality", label: "Quality" }
+    });
+
+    const runner = new ProjectJobRunner(jobQueue, bootstrapper, api);
+    const job = await runner.runNext();
+
+    expect(job?.status).toBe("completed");
+    expect(messages.some((message) => message.includes("Запущена генерация проекта"))).toBe(true);
+    expect(messages.some((message) => message.includes("Проект создан"))).toBe(true);
+  });
+});
+
+describe("TelegramPollingRuntime", () => {
+  it("processes updates, stores offset and drains one queued job", async () => {
+    const offsetRoot = await mkdtemp(join(tmpdir(), "hephaestus-telegram-offset-"));
+    const sessionStore = new InMemoryTelegramSessionStore();
+    const jobQueue = new InMemoryProjectJobQueue();
+    const messages: string[] = [];
+    try {
+      const api: TelegramApi = {
+        async getUpdates() {
+          return [
+            {
+              update_id: 10,
+              message: {
+                message_id: 1,
+                chat: { id: 100 },
+                text: "/status"
+              }
+            }
+          ];
+        },
+        async sendMessage(action) {
+          messages.push(action.text);
+        },
+        async answerCallbackQuery() {}
+      };
+      const bot = new HephaestusTelegramBot({
+        models: parseAvailableModels("quality|Quality"),
+        sessionStore,
+        jobQueue
+      });
+      await jobQueue.enqueue({
+        chatId: 100,
+        description: "Создай сервис книг",
+        selectedModel: { id: "quality", label: "Quality" }
+      });
+      const runtime = new TelegramPollingRuntime(
+        api,
+        bot,
+        new ProjectJobRunner(
+          jobQueue,
+          {
+            async bootstrap(input) {
+              return {
+                projectDir: "/tmp/project",
+                projectName: "book-tracker",
+                selectedModel: input.selectedModel
+              };
+            }
+          },
+          api
+        ),
+        new FilePollingOffsetStore(join(offsetRoot, "offset.json"))
+      );
+
+      const nextOffset = await runtime.runOnce();
+
+      expect(nextOffset).toBe(11);
+      expect(messages.some((message) => message.includes("Последние задания"))).toBe(true);
+      expect(messages.some((message) => message.includes("Проект создан"))).toBe(true);
+      await expect(new FilePollingOffsetStore(join(offsetRoot, "offset.json")).read()).resolves.toBe(11);
+    } finally {
+      await rm(offsetRoot, { recursive: true, force: true });
+    }
   });
 });
 

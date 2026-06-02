@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 import { resolve } from "node:path";
 import {
+  FilePollingOffsetStore,
+  FileProjectJobQueue,
+  FileTelegramSessionStore,
   HephaestusTelegramBot,
-  InMemoryTelegramSessionStore,
   LocalProjectBootstrapper,
+  ProjectJobRunner,
   TelegramHttpApi,
   TelegramPollingRuntime,
   createModelProviderForOption,
@@ -17,22 +20,35 @@ async function main(): Promise<void> {
   }
 
   const projectsDir = resolve(process.env.HEPHAESTUS_PROJECTS_DIR ?? "./generated-projects");
+  const stateDir = resolve(process.env.HEPHAESTUS_BOT_STATE_DIR ?? joinPath(projectsDir, ".hephaestus-bot"));
   const models = parseAvailableModels(process.env.HEPHAESTUS_AVAILABLE_MODELS);
   const api = new TelegramHttpApi({ token });
+  const sessionStore = new FileTelegramSessionStore(joinPath(stateDir, "sessions.json"));
+  const jobQueue = new FileProjectJobQueue(joinPath(stateDir, "jobs.json"));
+  const bootstrapper = new LocalProjectBootstrapper({
+    outputRoot: projectsDir,
+    createModelProvider: (model) => createModelProviderForOption(model)
+  });
   const bot = new HephaestusTelegramBot({
     models,
-    sessionStore: new InMemoryTelegramSessionStore(),
-    bootstrapper: new LocalProjectBootstrapper({
-      outputRoot: projectsDir,
-      createModelProvider: (model) => createModelProviderForOption(model)
-    })
+    sessionStore,
+    jobQueue
   });
-  const runtime = new TelegramPollingRuntime(api, bot);
+  const runtime = new TelegramPollingRuntime(
+    api,
+    bot,
+    new ProjectJobRunner(jobQueue, bootstrapper, api),
+    new FilePollingOffsetStore(joinPath(stateDir, "offset.json"))
+  );
 
   let offset: number | undefined;
   while (true) {
     offset = await runtime.runOnce(offset);
   }
+}
+
+function joinPath(base: string, suffix: string): string {
+  return resolve(base, suffix);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
