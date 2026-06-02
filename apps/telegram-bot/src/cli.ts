@@ -6,6 +6,7 @@ import {
   LocalProjectBootstrapper,
   TelegramHttpApi,
   TelegramPollingRuntime,
+  createModelProviderForOption,
   parseAvailableModels
 } from "./index.js";
 
@@ -21,7 +22,10 @@ async function main(): Promise<void> {
   const bot = new HephaestusTelegramBot({
     models,
     sessionStore: new InMemoryTelegramSessionStore(),
-    bootstrapper: new LocalProjectBootstrapper({ outputRoot: projectsDir })
+    bootstrapper: new LocalProjectBootstrapper({
+      outputRoot: projectsDir,
+      createModelProvider: (model) => createModelProviderForOption(model)
+    })
   });
   const runtime = new TelegramPollingRuntime(api, bot);
 

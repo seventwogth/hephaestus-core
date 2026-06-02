@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@hephaestus/agents": "file:../../packages/agents",
+    "@hephaestus/hermes-adapter": "file:../../packages/hermes-adapter",
     "@hephaestus/orchestrator": "file:../orchestrator"
   },
   "devDependencies": {

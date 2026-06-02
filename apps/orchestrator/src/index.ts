@@ -1,6 +1,6 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { createArchitecturePlan } from "@hephaestus/agents";
+import { analyzeRequirements, createArchitecturePlan } from "@hephaestus/agents";
 import {
   type AgentFileContext,
   type AgentRole,
@@ -124,6 +124,18 @@ export class Orchestrator {
     private readonly modelProvider?: ModelProvider
   ) {}
 
+  async bootstrapProjectFromPrompt(projectDir: string, requestText: string): Promise<ProjectSpec> {
+    const spec = await this.createRequirementsStage(projectDir, requestText);
+
+    await this.scaffoldProject(projectDir, spec);
+    await this.planProject(projectDir);
+    await this.generateDatabaseStage(projectDir);
+    await this.generateBackendStage(projectDir);
+    await this.generateFrontendStage(projectDir);
+
+    return spec;
+  }
+
   async scaffoldProject(projectDir: string, spec: ProjectSpec): Promise<void> {
     await materializeGeneratedWebApp({ targetDir: projectDir });
     await this.initializeProject(projectDir, spec);
@@ -157,7 +169,13 @@ export class Orchestrator {
       throw new Error("SPEC.json не найден");
     }
 
-    const plan = createArchitecturePlan(spec);
+    await this.setStage(projectDir, "PLANNING");
+    await this.updateTaskStatus(projectDir, "architecture", "in_progress");
+
+    const plan = this.modelProvider
+      ? await this.planWithAgent(projectDir)
+      : createArchitecturePlan(spec);
+
     await this.approveSpec(projectDir, plan);
     await this.updateTaskStatus(projectDir, "architecture", "done");
 
@@ -170,7 +188,32 @@ export class Orchestrator {
       throw new Error("PLAN.json не найден");
     }
 
-    await generateGoBackend({ projectDir, plan });
+    await this.setStage(projectDir, "GENERATING");
+    await this.updateTaskStatus(projectDir, "backend", "in_progress");
+
+    if (this.modelProvider) {
+      await this.runAgentStage(projectDir, {
+        role: "backend",
+        instruction: buildBackendInstruction(plan),
+        contextFiles: [
+          "SPEC.json",
+          "PLAN.json",
+          "backend/go.mod",
+          "backend/cmd/api/main.go",
+          "backend/internal/http/router.go",
+          "backend/internal/http/generated_routes.go",
+          "backend/internal/platform/database/database.go",
+          "backend/internal/platform/database/migrate.go",
+          "backend/migrations/0001_generated_schema.sql",
+          "README.md"
+        ],
+        writableFiles: ["backend", "docker-compose.yml", "README.md"],
+        validationCommand: "cd backend && go test ./..."
+      });
+    } else {
+      await generateGoBackend({ projectDir, plan });
+    }
+
     await this.updateTaskStatus(projectDir, "backend", "done");
   }
 
@@ -180,7 +223,29 @@ export class Orchestrator {
       throw new Error("PLAN.json не найден");
     }
 
-    await generateDatabaseArtifacts({ projectDir, plan });
+    await this.setStage(projectDir, "GENERATING");
+    await this.updateTaskStatus(projectDir, "database", "in_progress");
+
+    if (this.modelProvider) {
+      await this.runAgentStage(projectDir, {
+        role: "database",
+        instruction: buildDatabaseInstruction(plan),
+        contextFiles: [
+          "SPEC.json",
+          "PLAN.json",
+          "backend/migrations/0001_generated_schema.sql",
+          "backend/internal/platform/database/database.go",
+          "backend/internal/platform/database/migrate.go",
+          "docker-compose.yml",
+          "README.md"
+        ],
+        writableFiles: ["backend", "docker-compose.yml", "README.md"],
+        validationCommand: "cd backend && go test ./..."
+      });
+    } else {
+      await generateDatabaseArtifacts({ projectDir, plan });
+    }
+
     await this.updateTaskStatus(projectDir, "database", "done");
   }
 
@@ -190,7 +255,29 @@ export class Orchestrator {
       throw new Error("PLAN.json не найден");
     }
 
-    await generateReactFrontend({ projectDir, plan });
+    await this.setStage(projectDir, "GENERATING");
+    await this.updateTaskStatus(projectDir, "frontend", "in_progress");
+
+    if (this.modelProvider) {
+      await this.runAgentStage(projectDir, {
+        role: "frontend",
+        instruction: buildFrontendInstruction(plan),
+        contextFiles: [
+          "SPEC.json",
+          "PLAN.json",
+          "frontend/package.json",
+          "frontend/src/main.tsx",
+          "frontend/src/App.tsx",
+          "frontend/src/styles.css",
+          "README.md"
+        ],
+        writableFiles: ["frontend", "README.md"],
+        validationCommand: "cd frontend && npm run build"
+      });
+    } else {
+      await generateReactFrontend({ projectDir, plan });
+    }
+
     await this.updateTaskStatus(projectDir, "frontend", "done");
   }
 
@@ -313,6 +400,49 @@ export class Orchestrator {
     }
 
     return latestReport;
+  }
+
+  async createRequirementsStage(projectDir: string, requestText: string): Promise<ProjectSpec> {
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(join(projectDir, "REQUEST.md"), ensureTrailingNewline(requestText), "utf8");
+
+    if (!this.modelProvider) {
+      const spec = analyzeRequirements({ text: requestText });
+      await this.store.writeSpec(projectDir, spec);
+      return spec;
+    }
+
+    await this.setStage(projectDir, "REQUIREMENTS");
+    await this.runAgentStage(projectDir, {
+      role: "requirements",
+      instruction: buildRequirementsInstruction(),
+      contextFiles: ["REQUEST.md"],
+      writableFiles: ["SPEC.json"]
+    });
+
+    const spec = await this.store.readSpec(projectDir);
+    if (!spec) {
+      throw new Error("Requirements agent did not produce a valid SPEC.json");
+    }
+
+    return spec;
+  }
+
+  private async planWithAgent(projectDir: string): Promise<ProjectPlan> {
+    await this.runAgentStage(projectDir, {
+      role: "architect",
+      instruction: buildPlanInstruction(),
+      contextFiles: ["SPEC.json"],
+      writableFiles: ["PLAN.json"],
+      validationCommand: "cat PLAN.json"
+    });
+
+    const plan = await this.store.readPlan(projectDir);
+    if (!plan) {
+      throw new Error("Architect agent did not produce a valid PLAN.json");
+    }
+
+    return plan;
   }
 
   private async readContextFiles(
@@ -443,4 +573,63 @@ async function readJson<T>(path: string, schema: { parse(value: unknown): T }): 
 async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function buildRequirementsInstruction(): string {
+  return [
+    "Сформируй файл SPEC.json как валидный JSON без markdown.",
+    "SPEC.json должен содержать:",
+    '- projectName: kebab-case имя проекта',
+    "- description: краткое описание",
+    "- actors: минимум один актор",
+    "- features: минимум одна feature с id, title, description, priority",
+    "- entities: сущности с fields и при необходимости indexes",
+    "- requiresAuth, requiresDatabase, constraints, acceptanceCriteria",
+    "Не добавляй комментарии и лишние поля вне схемы."
+  ].join("\n");
+}
+
+function buildPlanInstruction(): string {
+  return [
+    "Сформируй файл PLAN.json как валидный JSON без markdown на основе SPEC.json.",
+    "Используй стек строго:",
+    '- frontend: "react-vite-typescript"',
+    '- backend: "go-chi"',
+    '- database: "postgresql"',
+    '- api: "rest-openapi"',
+    "Укажи backendModules, frontendRoutes, databaseEntities, endpoints и validationCommands.",
+    "Каждый endpoint должен иметь method, path, summary и authRequired."
+  ].join("\n");
+}
+
+function buildDatabaseInstruction(plan: ProjectPlan): string {
+  return [
+    `Сгенерируй весь database layer проекта ${plan.projectName} на основе SPEC.json и PLAN.json.`,
+    "Нужно обновить PostgreSQL migration files и backend database wiring в разрешенных файлах.",
+    "Соблюдай связи между сущностями, индексы, типы полей и совместимость с Go backend.",
+    "Возвращай полное содержимое каждого измененного файла."
+  ].join("\n");
+}
+
+function buildBackendInstruction(plan: ProjectPlan): string {
+  return [
+    `Сгенерируй весь Go backend проекта ${plan.projectName} на основе SPEC.json, PLAN.json и текущего scaffold.`,
+    "Разрешено переписывать scaffolded backend-файлы полностью.",
+    "Нужны рабочие REST handlers, routing, models, storage/repository integration и startup wiring.",
+    "Сохраняй совместимость с database migrations и docker-compose.",
+    "Возвращай полное содержимое каждого измененного файла."
+  ].join("\n");
+}
+
+function buildFrontendInstruction(plan: ProjectPlan): string {
+  return [
+    `Сгенерируй весь React frontend проекта ${plan.projectName} на основе SPEC.json, PLAN.json и текущего scaffold.`,
+    "Разрешено переписывать scaffolded frontend-файлы полностью.",
+    "Сделай интерфейс под основные user flows и связанные ресурсы из плана.",
+    "Используй существующий Vite/TypeScript scaffold и возвращай полное содержимое каждого измененного файла."
+  ].join("\n");
+}
+
+function ensureTrailingNewline(value: string): string {
+  return value.endsWith("\n") ? value : `${value}\n`;
 }

@@ -212,6 +212,148 @@ describe("Orchestrator", () => {
     }
   });
 
+  it("bootstraps a project from prompt through provider-backed agent stages", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
+    const provider: ModelProvider = {
+      async generate(input) {
+        if (input.role === "requirements") {
+          return {
+            role: input.role,
+            summary: "Created SPEC",
+            changedFiles: ["SPEC.json"],
+            updatedFiles: [
+              {
+                path: "SPEC.json",
+                content: `${JSON.stringify({
+                  projectName: "agent-library",
+                  description: "LLM generated library tracker",
+                  actors: [{ name: "user" }],
+                  features: [
+                    {
+                      id: "books-crud",
+                      title: "Manage books",
+                      description: "Create and edit books",
+                      priority: "must"
+                    }
+                  ],
+                  entities: [{ name: "Book", fields: ["title", "author"] }],
+                  requiresAuth: true,
+                  requiresDatabase: true,
+                  constraints: [],
+                  acceptanceCriteria: ["User can create books"]
+                }, null, 2)}\n`
+              }
+            ],
+            rawOutput: "spec"
+          };
+        }
+
+        if (input.role === "architect") {
+          return {
+            role: input.role,
+            summary: "Created PLAN",
+            changedFiles: ["PLAN.json"],
+            updatedFiles: [
+              {
+                path: "PLAN.json",
+                content: `${JSON.stringify({
+                  projectName: "agent-library",
+                  stack: {
+                    frontend: "react-vite-typescript",
+                    backend: "go-chi",
+                    database: "postgresql",
+                    api: "rest-openapi"
+                  },
+                  backendModules: ["books"],
+                  frontendRoutes: ["/", "/books"],
+                  databaseEntities: [{ name: "Book", fields: ["title", "author"] }],
+                  endpoints: [
+                    {
+                      method: "GET",
+                      path: "/api/books",
+                      summary: "List books",
+                      authRequired: true
+                    }
+                  ],
+                  validationCommands: ["npm run build", "go test ./..."]
+                }, null, 2)}\n`
+              }
+            ],
+            rawOutput: "plan"
+          };
+        }
+
+        if (input.role === "database") {
+          return {
+            role: input.role,
+            summary: "Created migration",
+            changedFiles: ["backend/migrations/0001_generated_schema.sql"],
+            updatedFiles: [
+              {
+                path: "backend/migrations/0001_generated_schema.sql",
+                content: "CREATE TABLE IF NOT EXISTS books (id uuid primary key, title text not null);\n"
+              }
+            ],
+            rawOutput: "database"
+          };
+        }
+
+        if (input.role === "backend") {
+          return {
+            role: input.role,
+            summary: "Created backend routes",
+            changedFiles: ["backend/internal/http/generated_routes.go"],
+            updatedFiles: [
+              {
+                path: "backend/internal/http/generated_routes.go",
+                content: "package http\n\nfunc registerGeneratedRoutes() {}\n"
+              }
+            ],
+            rawOutput: "backend"
+          };
+        }
+
+        if (input.role === "frontend") {
+          return {
+            role: input.role,
+            summary: "Created frontend",
+            changedFiles: ["frontend/src/main.tsx"],
+            updatedFiles: [
+              {
+                path: "frontend/src/main.tsx",
+                content: 'console.log("agent-library")\n'
+              }
+            ],
+            rawOutput: "frontend"
+          };
+        }
+
+        throw new Error(`unexpected role: ${input.role}`);
+      }
+    };
+
+    try {
+      const orchestrator = new Orchestrator(new FileProjectStateStore(), provider);
+      const spec = await orchestrator.bootstrapProjectFromPrompt(
+        projectDir,
+        "Сделай сервис для учета книг с CRUD интерфейсом."
+      );
+
+      const tasks = JSON.parse(await readFile(join(projectDir, "TASKS.json"), "utf8"));
+      const status = JSON.parse(await readFile(join(projectDir, "STATUS.json"), "utf8"));
+
+      expect(spec.projectName).toBe("agent-library");
+      await expect(readFile(join(projectDir, "REQUEST.md"), "utf8")).resolves.toContain("CRUD");
+      await expect(readFile(join(projectDir, "PLAN.json"), "utf8")).resolves.toContain("/api/books");
+      await expect(readFile(join(projectDir, "backend/migrations/0001_generated_schema.sql"), "utf8")).resolves.toContain("CREATE TABLE");
+      await expect(readFile(join(projectDir, "frontend/src/main.tsx"), "utf8")).resolves.toContain("agent-library");
+      expect(tasks.tasks.find((task: { id: string }) => task.id === "frontend")?.status).toBe("done");
+      expect(status.stage).toBe("GENERATING");
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it("generates Go backend from stored plan", async () => {
     const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
 

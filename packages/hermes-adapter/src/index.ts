@@ -44,6 +44,14 @@ export interface CommandModelProviderOptions {
   timeoutMs?: number;
 }
 
+export interface OllamaModelProviderOptions {
+  model: string;
+  baseUrl?: string;
+  temperature?: number;
+  timeoutMs?: number;
+  systemPrompt?: string;
+}
+
 export class StubModelProvider implements ModelProvider {
   async generate(input: AgentRunInput): Promise<AgentRunResult> {
     return {
@@ -135,7 +143,7 @@ export class CommandModelProvider implements ModelProvider {
         }
 
         try {
-          resolve(parseCommandResult(input.role, stdout));
+          resolve(parseAgentRunResult(input.role, stdout));
         } catch (error) {
           reject(error);
         }
@@ -147,14 +155,108 @@ export class CommandModelProvider implements ModelProvider {
   }
 }
 
-function parseCommandResult(role: AgentRole, stdout: string): AgentRunResult {
-  const payload = JSON.parse(stdout) as Partial<AgentRunResult> & { rawOutput?: string };
+export class OllamaModelProvider implements ModelProvider {
+  private readonly baseUrl: string;
+  private readonly timeoutMs: number;
+  private readonly temperature: number;
+  private readonly systemPrompt: string;
+
+  constructor(private readonly options: OllamaModelProviderOptions) {
+    this.baseUrl = options.baseUrl ?? "http://127.0.0.1:11434";
+    this.timeoutMs = options.timeoutMs ?? 180_000;
+    this.temperature = options.temperature ?? 0.1;
+    this.systemPrompt =
+      options.systemPrompt ??
+      [
+        "Ты агент Hermes, который генерирует и редактирует файлы проекта.",
+        "Отвечай строго JSON-объектом без markdown и без пояснений вне JSON.",
+        'Формат ответа: {"summary":"...","changedFiles":["path"],"updatedFiles":[{"path":"...","content":"..."}],"rawOutput":"optional"}',
+        "Если файл не нужно менять, не добавляй его в updatedFiles.",
+        "Содержимое файлов возвращай полностью."
+      ].join(" ");
+  }
+
+  async generate(input: AgentRunInput): Promise<AgentRunResult> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, this.timeoutMs);
+
+    try {
+      const response = await fetch(`${this.baseUrl}/api/generate`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: this.options.model,
+          system: this.systemPrompt,
+          prompt: buildOllamaPrompt(input),
+          format: "json",
+          stream: false,
+          options: {
+            temperature: this.temperature
+          }
+        }),
+        signal: controller.signal
+      });
+
+      const payload = (await response.json()) as { response?: string; error?: string };
+      if (!response.ok) {
+        throw new Error(payload.error ?? `Ollama request failed with status ${response.status}`);
+      }
+
+      if (!payload.response) {
+        throw new Error("Ollama response payload does not contain `response`");
+      }
+
+      return parseAgentRunResult(input.role, payload.response);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+function parseAgentRunResult(role: AgentRole, rawOutput: string): AgentRunResult {
+  const payload = JSON.parse(rawOutput) as Partial<AgentRunResult> & { rawOutput?: string };
 
   return {
     role,
     summary: payload.summary ?? "Command model provider run completed",
     changedFiles: payload.changedFiles ?? [],
     updatedFiles: payload.updatedFiles ?? [],
-    rawOutput: payload.rawOutput ?? stdout
+    rawOutput: payload.rawOutput ?? rawOutput
   };
+}
+
+function buildOllamaPrompt(input: AgentRunInput): string {
+  const filesBlock = input.files.length === 0
+    ? "Контекстных файлов нет."
+    : input.files
+        .map((file) => {
+          return [
+            `FILE: ${file.path}`,
+            "```",
+            file.content,
+            "```"
+          ].join("\n");
+        })
+        .join("\n\n");
+
+  return [
+    `Роль агента: ${input.role}`,
+    "",
+    "Инструкция:",
+    input.instruction,
+    "",
+    "Файлы, которые разрешено изменять:",
+    ...input.writableFiles.map((path) => `- ${path}`),
+    "",
+    input.validationCommand
+      ? `Команда валидации после правок: ${input.validationCommand}`
+      : "Команда валидации не задана.",
+    "",
+    "Текущий контекст проекта:",
+    filesBlock
+  ].join("\n");
 }

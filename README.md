@@ -134,7 +134,7 @@ in-memory store.
 
 Telegram-бот находится в `apps/telegram-bot`. Он работает через polling Telegram
 Bot API, предлагает выбрать модель до старта проекта, затем принимает текстовое
-описание и создаёт проект через текущий orchestrator flow.
+описание и создаёт проект через agent-driven orchestrator flow.
 
 Запуск:
 
@@ -147,9 +147,20 @@ TELEGRAM_BOT_TOKEN=... npm run telegram-bot
 - `TELEGRAM_BOT_TOKEN` — токен Telegram-бота
 - `HEPHAESTUS_PROJECTS_DIR` — директория для создаваемых проектов, по умолчанию `./generated-projects`
 - `HEPHAESTUS_AVAILABLE_MODELS` — список моделей в формате `id|label|description,id2|label2|description2`
+- `HEPHAESTUS_MODEL_RUNTIME_MAP` — необязательное сопоставление `modelId=stub` или `modelId=ollama:model-name`
+- `HEPHAESTUS_OLLAMA_BASE_URL` — URL локального Ollama API, по умолчанию `http://127.0.0.1:11434`
+- `HEPHAESTUS_OLLAMA_TIMEOUT_MS` — таймаут одного agent run для Ollama
 
 После выбора модели бот сохраняет её в `MODEL_SELECTION.json` внутри созданного
-проекта, чтобы последующие этапы могли использовать этот контекст.
+проекта и, если модель не `stub`, поднимает для неё реальный provider.
+
+Текущий LLM-first flow в боте:
+
+1. бот сохраняет описание пользователя в `REQUEST.md`
+2. requirements-agent через Hermes/Ollama пишет `SPEC.json`
+3. architect-agent пишет `PLAN.json`
+4. database/backend/frontend агенты последовательно переписывают scaffold проекта
+5. все agent runs журналируются в `AGENT_RUNS.jsonl`
 
 ## ModelProvider
 
@@ -158,10 +169,15 @@ TELEGRAM_BOT_TOKEN=... npm run telegram-bot
 - `StubModelProvider` для детерминированных тестов;
 - `CommandModelProvider` для подключения внешнего модельного рантайма через JSON
   по `stdin/stdout`.
+- `OllamaModelProvider` для прямого вызова локального Ollama HTTP API.
 
 Контракт простой: внешний процесс получает `AgentRunInput` в `stdin` и должен
 вернуть JSON с полями `summary`, `changedFiles`, `updatedFiles` и `rawOutput`.
 `updatedFiles` затем применяются оркестратором только в разрешённые пути этапа.
+
+Для прямого Ollama-режима Hermes формирует prompt из роли агента, инструкции,
+контекстных файлов и списка разрешённых путей записи, а затем ожидает JSON-ответ
+с тем же контрактом `updatedFiles`.
 
 ## Статус реализации
 
