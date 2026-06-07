@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { analyzeRequirements, createArchitecturePlan } from "@hephaestus/agents";
 import {
@@ -93,6 +93,28 @@ export interface BootstrapProjectResult {
   validationReport?: ValidationReport;
 }
 
+interface ArtifactCompletenessCheck {
+  id: string;
+  description: string;
+  paths: string[];
+  mode: "all" | "any";
+}
+
+export interface ArtifactCompletenessCheckResult extends ArtifactCompletenessCheck {
+  passed: boolean;
+  missingPaths: string[];
+}
+
+export interface ArtifactCompletenessReport {
+  passed: boolean;
+  generatedAt: string;
+  checks: ArtifactCompletenessCheckResult[];
+}
+
+export interface ArtifactCompletenessOptions {
+  includeIntegration?: boolean;
+}
+
 export class FileProjectStateStore implements ProjectStateStore {
   async readSpec(projectDir: string): Promise<ProjectSpec | null> {
     return readJson(join(projectDir, "SPEC.json"), projectSpecSchema);
@@ -174,6 +196,11 @@ export class Orchestrator {
     await this.generateFrontendStage(projectDir, generationOptions);
     if (options.runIntegration ?? true) {
       await this.integrateProjectStage(projectDir, generationOptions);
+    }
+    if (options.noScaffold) {
+      await this.validateArtifactCompletenessStage(projectDir, {
+        includeIntegration: options.runIntegration ?? true
+      });
     }
 
     let validationReport: ValidationReport | undefined;
@@ -537,6 +564,51 @@ export class Orchestrator {
     return result;
   }
 
+  async validateArtifactCompletenessStage(
+    projectDir: string,
+    options: ArtifactCompletenessOptions = {}
+  ): Promise<ArtifactCompletenessReport> {
+    const checks = NO_SCAFFOLD_ARTIFACT_CHECKS.filter((check) => {
+      return options.includeIntegration ?? true
+        ? true
+        : check.id !== "integration-compose" && check.id !== "integration-env";
+    });
+    const results = await Promise.all(
+      checks.map(async (check): Promise<ArtifactCompletenessCheckResult> => {
+        const pathResults = await Promise.all(
+          check.paths.map(async (path) => ({
+            path,
+            exists: await artifactPathExists(projectDir, path)
+          }))
+        );
+        const passed = check.mode === "all"
+          ? pathResults.every((result) => result.exists)
+          : pathResults.some((result) => result.exists);
+
+        return {
+          ...check,
+          passed,
+          missingPaths: pathResults.filter((result) => !result.exists).map((result) => result.path)
+        };
+      })
+    );
+    const report: ArtifactCompletenessReport = {
+      passed: results.every((result) => result.passed),
+      generatedAt: new Date().toISOString(),
+      checks: results
+    };
+
+    await writeJson(join(projectDir, "ARTIFACT_CHECKS.json"), report);
+
+    if (!report.passed) {
+      await this.setStage(projectDir, "FAILED");
+      const failedIds = report.checks.filter((check) => !check.passed).map((check) => check.id);
+      throw new Error(`No-scaffold artifact completeness failed: ${failedIds.join(", ")}`);
+    }
+
+    return report;
+  }
+
   private async runAgentGenerationStage(
     projectDir: string,
     input: AgentStageInput,
@@ -790,6 +862,73 @@ function newStatus(stage: Stage): ProjectStatus {
     attempts: {},
     updatedAt: new Date().toISOString()
   };
+}
+
+const NO_SCAFFOLD_ARTIFACT_CHECKS: ArtifactCompletenessCheck[] = [
+  {
+    id: "api-contract",
+    description: "OpenAPI contract exists for backend/frontend coordination",
+    paths: ["openapi.json"],
+    mode: "all"
+  },
+  {
+    id: "backend-module",
+    description: "Go backend module exists",
+    paths: ["backend/go.mod"],
+    mode: "all"
+  },
+  {
+    id: "backend-entrypoint",
+    description: "Go backend has an executable entrypoint",
+    paths: ["backend/cmd/api/main.go", "backend/cmd/server/main.go", "backend/main.go"],
+    mode: "any"
+  },
+  {
+    id: "database-migrations",
+    description: "Database migration files exist",
+    paths: ["backend/migrations", "migrations"],
+    mode: "any"
+  },
+  {
+    id: "frontend-package",
+    description: "Frontend package manifest exists",
+    paths: ["frontend/package.json"],
+    mode: "all"
+  },
+  {
+    id: "frontend-entrypoint",
+    description: "Frontend has an application entrypoint",
+    paths: ["frontend/src/main.tsx", "frontend/src/main.ts", "frontend/src/App.tsx"],
+    mode: "any"
+  },
+  {
+    id: "integration-compose",
+    description: "Docker Compose integration exists",
+    paths: ["docker-compose.yml"],
+    mode: "all"
+  },
+  {
+    id: "integration-env",
+    description: "Environment example exists",
+    paths: [".env.example"],
+    mode: "all"
+  }
+];
+
+async function artifactPathExists(projectDir: string, path: string): Promise<boolean> {
+  try {
+    const pathStat = await stat(join(projectDir, path));
+    if (!pathStat.isDirectory()) {
+      return true;
+    }
+
+    return (await readdir(join(projectDir, path))).length > 0;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
 }
 
 function isWritablePath(path: string, writableFiles: string[]): boolean {

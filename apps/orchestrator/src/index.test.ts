@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -849,6 +849,49 @@ describe("Orchestrator", () => {
         "CREATE TABLE books"
       );
       await expect(readFile(join(projectDir, "AGENT_STAGE_RETRIES.jsonl"), "utf8")).resolves.toContain("\"status\":\"recovered\"");
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes an artifact completeness report for missing no-scaffold files", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
+
+    try {
+      const orchestrator = new Orchestrator(new FileProjectStateStore());
+
+      await orchestrator.initializeProject(projectDir, {
+        projectName: "agent-only-books",
+        description: "Agent-only generated project",
+        actors: [{ name: "user" }],
+        features: [
+          {
+            id: "books-crud",
+            title: "Manage books",
+            description: "Manage books",
+            priority: "must"
+          }
+        ],
+        entities: [{ name: "Book", fields: ["title"] }],
+        requiresAuth: true,
+        requiresDatabase: true,
+        constraints: [],
+        acceptanceCriteria: ["Books can be listed"]
+      });
+      await mkdir(join(projectDir, "backend/cmd/api"), { recursive: true });
+      await mkdir(join(projectDir, "backend/migrations"), { recursive: true });
+      await mkdir(join(projectDir, "frontend/src"), { recursive: true });
+      await writeFile(join(projectDir, "openapi.json"), "{}\n", "utf8");
+      await writeFile(join(projectDir, "backend/go.mod"), "module agent-only-books/backend\n", "utf8");
+      await writeFile(join(projectDir, "backend/cmd/api/main.go"), "package main\nfunc main() {}\n", "utf8");
+      await writeFile(join(projectDir, "backend/migrations/0001_init.sql"), "CREATE TABLE books (id text primary key);\n", "utf8");
+      await writeFile(join(projectDir, "frontend/src/main.tsx"), "console.log('app')\n", "utf8");
+      await writeFile(join(projectDir, "docker-compose.yml"), "services: {}\n", "utf8");
+
+      await expect(orchestrator.validateArtifactCompletenessStage(projectDir)).rejects.toThrow("frontend-package");
+
+      await expect(readFile(join(projectDir, "ARTIFACT_CHECKS.json"), "utf8")).resolves.toContain("\"passed\": false");
+      await expect(readFile(join(projectDir, "STATUS.json"), "utf8")).resolves.toContain("\"stage\": \"FAILED\"");
     } finally {
       await rm(projectDir, { recursive: true, force: true });
     }
