@@ -527,10 +527,12 @@ describe("Orchestrator", () => {
       await orchestrator.generateFrontendStage(projectDir);
 
       const main = await readFile(join(projectDir, "frontend/src/main.tsx"), "utf8");
+      const api = await readFile(join(projectDir, "frontend/src/api.ts"), "utf8");
       const tasks = JSON.parse(await readFile(join(projectDir, "TASKS.json"), "utf8"));
       const frontendTask = tasks.tasks.find((task: { id: string }) => task.id === "frontend");
 
-      expect(main).toContain("Учет книг");
+      expect(main).toContain("resourceDefinitions.map");
+      expect(api).toContain("\"title\": \"Учет книг\"");
       expect(frontendTask.status).toBe("done");
     } finally {
       await rm(projectDir, { recursive: true, force: true });

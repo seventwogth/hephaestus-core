@@ -12,6 +12,11 @@ export interface GeneratedFile {
   content: string;
 }
 
+interface ResourceDescriptor {
+  resourceName: string;
+  entity: ProjectEntity;
+}
+
 export interface GenerateDatabaseOptions {
   projectDir: string;
   plan: ProjectPlan;
@@ -31,15 +36,11 @@ export async function generateDatabaseArtifacts(
   options: GenerateDatabaseOptions
 ): Promise<GeneratedFile[]> {
   const plan = projectPlanSchema.parse(options.plan);
-  const entity = plan.databaseEntities[0] ?? {
-    name: "Item",
-    fields: defaultEntityFields(["title", "description", "status"])
-  };
-  const resourceName = inferResourceName(plan);
+  const entities = getPlanEntities(plan);
   const files = [
     {
       path: "backend/migrations/0001_generated_schema.sql",
-      content: renderDatabaseMigration(plan.databaseEntities.length > 0 ? plan.databaseEntities : [entity])
+      content: renderDatabaseMigration(entities)
     }
   ];
 
@@ -49,20 +50,16 @@ export async function generateDatabaseArtifacts(
 
 export async function generateGoBackend(options: GenerateBackendOptions): Promise<GeneratedFile[]> {
   const plan = projectPlanSchema.parse(options.plan);
-  const entity = plan.databaseEntities[0] ?? {
-    name: "Item",
-    fields: defaultEntityFields(["title", "description", "status"])
-  };
-  const resourceName = inferResourceName(plan);
+  const resources = getResourceDescriptors(plan);
   const files = [
     ...buildDatabaseFiles(plan),
     {
       path: "backend/internal/http/generated_routes.go",
-      content: renderGeneratedRoutes(resourceName, entity.name, entity.fields)
+      content: renderGeneratedRoutes(resources)
     },
     {
       path: "backend/internal/http/generated_routes_test.go",
-      content: renderGeneratedRoutesTest(resourceName, entity.name, entity.fields)
+      content: renderGeneratedRoutesTest(resources)
     }
   ];
 
@@ -72,19 +69,15 @@ export async function generateGoBackend(options: GenerateBackendOptions): Promis
 
 export async function generateReactFrontend(options: GenerateFrontendOptions): Promise<GeneratedFile[]> {
   const plan = projectPlanSchema.parse(options.plan);
-  const entity = plan.databaseEntities[0] ?? {
-    name: "Item",
-    fields: defaultEntityFields(["title", "description", "status"])
-  };
-  const resourceName = inferResourceName(plan);
+  const resources = getResourceDescriptors(plan);
   const files = [
     {
       path: "frontend/src/api.ts",
-      content: renderApiClient(resourceName, entity.name, entity.fields)
+      content: renderApiClient(resources)
     },
     {
       path: "frontend/src/main.tsx",
-      content: renderFrontendApp(entity.name, entity.fields)
+      content: renderFrontendApp(resources)
     },
     {
       path: "frontend/src/styles.css",
@@ -97,15 +90,12 @@ export async function generateReactFrontend(options: GenerateFrontendOptions): P
 }
 
 function buildDatabaseFiles(plan: ProjectPlan): GeneratedFile[] {
-  const entity = plan.databaseEntities[0] ?? {
-    name: "Item",
-    fields: defaultEntityFields(["title", "description", "status"])
-  };
+  const entities = getPlanEntities(plan);
 
   return [
     {
       path: "backend/migrations/0001_generated_schema.sql",
-      content: renderDatabaseMigration(plan.databaseEntities.length > 0 ? plan.databaseEntities : [entity])
+      content: renderDatabaseMigration(entities)
     }
   ];
 }
@@ -118,17 +108,37 @@ async function writeGeneratedFiles(projectDir: string, files: GeneratedFile[]): 
   }
 }
 
-function inferResourceName(plan: ProjectPlan): string {
+function getPlanEntities(plan: ProjectPlan): ProjectEntity[] {
+  return plan.databaseEntities.length > 0
+    ? plan.databaseEntities
+    : [
+        {
+          name: "Item",
+          fields: defaultEntityFields(["title", "description", "status"]),
+          indexes: []
+        }
+      ];
+}
+
+function getResourceDescriptors(plan: ProjectPlan): ResourceDescriptor[] {
+  return getPlanEntities(plan).map((entity) => ({
+    entity,
+    resourceName: inferResourceName(plan, entity.name)
+  }));
+}
+
+function inferResourceName(plan: ProjectPlan, entityName: string): string {
+  const inferredResourceName = inferResourceNameFromEntity(entityName);
   const resourceEndpoint = plan.endpoints.find((endpoint) => {
     const parts = endpoint.path.split("/").filter(Boolean);
-    return endpoint.method === "GET" && parts.length === 2 && parts[0] === "api";
+    return endpoint.method === "GET" && parts.length === 2 && parts[0] === "api" && parts[1] === inferredResourceName;
   });
 
   if (resourceEndpoint) {
     return resourceEndpoint.path.split("/").filter(Boolean)[1]!;
   }
 
-  return inferResourceNameFromEntity(plan.databaseEntities[0]?.name ?? "Item");
+  return inferredResourceName;
 }
 
 function renderDatabaseMigration(entities: ProjectEntity[]): string {
@@ -153,7 +163,58 @@ function renderDatabaseMigration(entities: ProjectEntity[]): string {
   return `-- Generated schema for ${orderedEntities.map((entity) => entity.name).join(", ")}.\n${statements.join("\n\n")}\n`;
 }
 
-function renderGeneratedRoutes(resourceName: string, entityName: string, fields: EntityField[]): string {
+function renderGeneratedRoutes(resources: ResourceDescriptor[]): string {
+  const registrarEntries = resources.map(({ entity }) => {
+    const modelName = toGoIdentifier(entity.name);
+    return `\t\tnewGenerated${modelName}Routes(&postgres${modelName}Store{db: db}),`;
+  });
+
+  return `package http
+
+import (
+\t"context"
+\t"database/sql"
+\t"encoding/json"
+\t"errors"
+\t"fmt"
+\t"net/http"
+
+\t"github.com/go-chi/chi/v5"
+)
+
+type generatedRouteRegistrars []GeneratedRouteRegistrar
+
+func (registrars generatedRouteRegistrars) Register(router chi.Router) {
+\tfor _, registrar := range registrars {
+\t\tregistrar.Register(router)
+\t}
+}
+
+func NewGeneratedRouteRegistrar(db *sql.DB) GeneratedRouteRegistrar {
+\tif db == nil {
+\t\treturn noopGeneratedRouteRegistrar{}
+\t}
+
+\treturn generatedRouteRegistrars{
+${registrarEntries.join("\n")}
+\t}
+}
+
+${resources.map(renderGeneratedRouteSection).join("\n")}
+func nullableString(value *string) any {
+\tif value == nil {
+\t\treturn nil
+\t}
+
+\treturn *value
+}
+`;
+}
+
+function renderGeneratedRouteSection(resource: ResourceDescriptor): string {
+  const { resourceName, entity } = resource;
+  const entityName = entity.name;
+  const fields = entity.fields;
   const modelName = toGoIdentifier(entityName);
   const variableName = lowerFirst(modelName);
   const routeTypeName = `generated${modelName}Routes`;
@@ -191,20 +252,7 @@ function renderGeneratedRoutes(resourceName: string, entityName: string, fields:
     return `\tif input.${goField} != nil {\n\t\tpersisted.${goField} = *input.${goField}\n\t}`;
   });
 
-  return `package http
-
-import (
-\t"context"
-\t"database/sql"
-\t"encoding/json"
-\t"errors"
-\t"fmt"
-\t"net/http"
-
-\t"github.com/go-chi/chi/v5"
-)
-
-type ${modelName} struct {
+  return `type ${modelName} struct {
 ${structFields.join("\n")}
 }
 
@@ -231,14 +279,6 @@ type ${routeTypeName} struct {
 
 type ${postgresStoreTypeName} struct {
 \tdb *sql.DB
-}
-
-func NewGeneratedRouteRegistrar(db *sql.DB) GeneratedRouteRegistrar {
-\tif db == nil {
-\t\treturn noopGeneratedRouteRegistrar{}
-\t}
-
-\treturn ${routeFactoryName}(&${postgresStoreTypeName}{db: db})
 }
 
 func ${routeFactoryName}(store ${storeTypeName}) GeneratedRouteRegistrar {
@@ -370,18 +410,29 @@ func (store *${postgresStoreTypeName}) Delete${modelName}(ctx context.Context, i
 
 \treturn nil
 }
-
-func nullableString(value *string) any {
-\tif value == nil {
-\t\treturn nil
-\t}
-
-\treturn *value
-}
 `;
 }
 
-function renderGeneratedRoutesTest(resourceName: string, entityName: string, fields: EntityField[]): string {
+function renderGeneratedRoutesTest(resources: ResourceDescriptor[]): string {
+  return `package http
+
+import (
+\t"bytes"
+\t"context"
+\t"net/http"
+\t"net/http/httptest"
+\t"strconv"
+\t"testing"
+)
+
+${resources.map(renderGeneratedRoutesTestSection).join("\n")}
+`;
+}
+
+function renderGeneratedRoutesTestSection(resource: ResourceDescriptor): string {
+  const { resourceName, entity } = resource;
+  const entityName = entity.name;
+  const fields = entity.fields;
   const modelName = toGoIdentifier(entityName);
   const routeFactoryName = `newGenerated${modelName}Routes`;
   const storeTypeName = `stub${modelName}Store`;
@@ -402,18 +453,7 @@ function renderGeneratedRoutesTest(resourceName: string, entityName: string, fie
     return `\tif input.${goField} != nil {\n\t\tcurrent.${goField} = *input.${goField}\n\t}`;
   });
 
-  return `package http
-
-import (
-\t"bytes"
-\t"context"
-\t"net/http"
-\t"net/http/httptest"
-\t"strconv"
-\t"testing"
-)
-
-type ${storeTypeName} struct {
+  return `type ${storeTypeName} struct {
 \tnextID int
 \titems  map[string]${modelName}
 }
@@ -461,7 +501,7 @@ func (store *${storeTypeName}) Delete${modelName}(ctx context.Context, id string
 \treturn nil
 }
 
-func TestGeneratedResourceCRUD(t *testing.T) {
+func TestGenerated${modelName}ResourceCRUD(t *testing.T) {
 \trouter := NewRouter(${routeFactoryName}(new${storeTypeName}()))
 
 \tcreateRequest := httptest.NewRequest(http.MethodPost, "/api/${resourceName}", bytes.NewBufferString(\`${renderJSONBody(fieldJsonEntries)}\`))
@@ -495,36 +535,54 @@ func TestGeneratedResourceCRUD(t *testing.T) {
 `;
 }
 
-function renderApiClient(resourceName: string, entityName: string, fields: EntityField[]): string {
-  const modelName = toGoIdentifier(entityName);
-  const fieldNames = normalizedEntityFields(fields).map((field) => field.name);
-  const typeFields = unique(["id", ...fieldNames]).map((field) => {
-    return `  ${toJsonName(field)}: string;`;
-  });
-  const createFields = fieldNames.map((field) => {
-    return `  ${toJsonName(field)}: string;`;
+function renderApiClient(resources: ResourceDescriptor[]): string {
+  const definitions = resources.map((resource) => {
+    const fields = normalizedEntityFields(resource.entity.fields).map((field) => ({
+      name: toJsonName(field.name),
+      label: toRussianFieldLabel(toJsonName(field.name))
+    }));
+
+    return {
+      key: toJsonName(resource.entity.name),
+      title: renderResourceTitle(resource.entity.name),
+      resourceName: resource.resourceName,
+      fields
+    };
   });
 
   return `import { apiBaseUrl } from "./config";
 
-export interface ${modelName} {
-${typeFields.join("\n")}
+export interface ResourceField {
+  name: string;
+  label: string;
 }
 
-export interface Create${modelName}Input {
-${createFields.join("\n")}
+export interface ResourceDefinition {
+  key: string;
+  title: string;
+  resourceName: string;
+  fields: ResourceField[];
 }
 
-export async function list${modelName}s(): Promise<${modelName}[]> {
-  const response = await fetch(apiBaseUrl + "/api/${resourceName}");
+export type ResourceRecord = Record<string, string> & {
+  id: string;
+};
+
+export const resourceDefinitions: ResourceDefinition[] = ${JSON.stringify(definitions, null, 2)};
+
+export async function listResource(definition: ResourceDefinition): Promise<ResourceRecord[]> {
+  const response = await fetch(apiBaseUrl + "/api/" + definition.resourceName);
   if (!response.ok) {
     throw new Error("Не удалось загрузить записи");
   }
   return response.json();
 }
 
-export async function create${modelName}(input: Create${modelName}Input): Promise<${modelName}> {
-  const response = await fetch(apiBaseUrl + "/api/${resourceName}", {
+export async function createResource(
+  definition: ResourceDefinition,
+  input: Record<string, string>
+): Promise<ResourceRecord> {
+  const response = await fetch(apiBaseUrl + "/api/" + definition.resourceName, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
@@ -539,37 +597,32 @@ export async function create${modelName}(input: Create${modelName}Input): Promis
 `;
 }
 
-function renderFrontendApp(entityName: string, fields: EntityField[]): string {
-  const modelName = toGoIdentifier(entityName);
-  const title = entityName === "Book" ? "Учет книг" : `Управление ${entityName}`;
-  const uniqueFields = normalizedEntityFields(fields).map((field) => field.name);
-  const initialForm = uniqueFields.map((field) => `${toJsonName(field)}: ""`).join(", ");
-  const formInputs = uniqueFields.map((field) => {
-    const jsonName = toJsonName(field);
-    return `            <label>
-              <span>${toRussianFieldLabel(jsonName)}</span>
-              <input
-                value={form.${jsonName}}
-                onChange={(event) => setForm({ ...form, ${jsonName}: event.target.value })}
-              />
-            </label>`;
-  });
-  const tableHeaders = uniqueFields.map((field) => {
-    return `              <th>${toRussianFieldLabel(toJsonName(field))}</th>`;
-  });
-  const tableCells = uniqueFields.map((field) => {
-    const jsonName = toJsonName(field);
-    return `                <td>{item.${jsonName}}</td>`;
-  });
+function renderFrontendApp(resources: ResourceDescriptor[]): string {
+  const firstResourceKey = toJsonName(resources[0]?.entity.name ?? "Item");
 
-  return `import React, { useEffect, useState } from "react";
+  return `import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { type ${modelName}, create${modelName}, list${modelName}s } from "./api";
+import {
+  type ResourceDefinition,
+  type ResourceRecord,
+  createResource,
+  listResource,
+  resourceDefinitions
+} from "./api";
 import "./styles.css";
 
+function createEmptyForm(definition: ResourceDefinition): Record<string, string> {
+  return Object.fromEntries(definition.fields.map((field) => [field.name, ""]));
+}
+
 function App() {
-  const [items, setItems] = useState<${modelName}[]>([]);
-  const [form, setForm] = useState({ ${initialForm} });
+  const [activeKey, setActiveKey] = useState("${firstResourceKey}");
+  const activeResource = useMemo(
+    () => resourceDefinitions.find((definition) => definition.key === activeKey) ?? resourceDefinitions[0],
+    [activeKey]
+  );
+  const [items, setItems] = useState<ResourceRecord[]>([]);
+  const [form, setForm] = useState<Record<string, string>>(() => createEmptyForm(activeResource));
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -577,7 +630,7 @@ function App() {
     setIsLoading(true);
     setError(null);
     try {
-      setItems(await list${modelName}s());
+      setItems(await listResource(activeResource));
     } catch (error) {
       setError(error instanceof Error ? error.message : "Ошибка загрузки");
     } finally {
@@ -586,15 +639,16 @@ function App() {
   }
 
   useEffect(() => {
+    setForm(createEmptyForm(activeResource));
     void loadItems();
-  }, []);
+  }, [activeResource]);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
     try {
-      await create${modelName}(form);
-      setForm({ ${initialForm} });
+      await createResource(activeResource, form);
+      setForm(createEmptyForm(activeResource));
       await loadItems();
     } catch (error) {
       setError(error instanceof Error ? error.message : "Ошибка сохранения");
@@ -606,17 +660,38 @@ function App() {
       <header className="page-header">
         <div>
           <p className="eyebrow">Hephaestus</p>
-          <h1>${title}</h1>
+          <h1>{activeResource.title}</h1>
         </div>
         <button type="button" onClick={() => void loadItems()}>
           Обновить
         </button>
       </header>
 
+      <nav className="resource-tabs" aria-label="Ресурсы проекта">
+        {resourceDefinitions.map((definition) => (
+          <button
+            key={definition.key}
+            type="button"
+            className={definition.key === activeResource.key ? "active" : ""}
+            onClick={() => setActiveKey(definition.key)}
+          >
+            {definition.title}
+          </button>
+        ))}
+      </nav>
+
       <section className="workspace">
         <form className="editor" onSubmit={handleSubmit}>
           <h2>Новая запись</h2>
-${formInputs.join("\n")}
+          {activeResource.fields.map((field) => (
+            <label key={field.name}>
+              <span>{field.label}</span>
+              <input
+                value={form[field.name] ?? ""}
+                onChange={(event) => setForm({ ...form, [field.name]: event.target.value })}
+              />
+            </label>
+          ))}
           <button type="submit">Сохранить</button>
         </form>
 
@@ -629,13 +704,17 @@ ${formInputs.join("\n")}
           <table>
             <thead>
               <tr>
-${tableHeaders.join("\n")}
+                {activeResource.fields.map((field) => (
+                  <th key={field.name}>{field.label}</th>
+                ))}
               </tr>
             </thead>
             <tbody>
               {items.map((item) => (
                 <tr key={item.id}>
-${tableCells.join("\n")}
+                  {activeResource.fields.map((field) => (
+                    <td key={field.name}>{item[field.name]}</td>
+                  ))}
                 </tr>
               ))}
             </tbody>
@@ -694,6 +773,23 @@ button {
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 24px;
+}
+
+.resource-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.resource-tabs button {
+  color: #245c4f;
+  background: #dfeee9;
+}
+
+.resource-tabs button.active {
+  color: #ffffff;
+  background: #245c4f;
 }
 
 .eyebrow {
@@ -899,8 +995,16 @@ function toRussianFieldLabel(field: string): string {
   return labels[field] ?? field;
 }
 
-function unique(values: string[]): string[] {
-  return Array.from(new Set(values));
+function renderResourceTitle(entityName: string): string {
+  const normalizedName = toJsonName(entityName);
+  const titles: Record<string, string> = {
+    book: "Учет книг",
+    task: "Задачи",
+    project: "Проекты",
+    user: "Пользователи"
+  };
+
+  return titles[normalizedName] ?? `Управление ${entityName}`;
 }
 
 function inferResourceNameFromEntity(entityName: string): string {

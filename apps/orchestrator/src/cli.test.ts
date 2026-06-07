@@ -199,7 +199,8 @@ describe("scaffold CLI", () => {
       const files = await generateFrontendFromProject({ projectDir: outDir });
 
       expect(files).toContain("frontend/src/api.ts");
-      await expect(readFile(join(outDir, "frontend/src/main.tsx"), "utf8")).resolves.toContain("Учет книг");
+      await expect(readFile(join(outDir, "frontend/src/main.tsx"), "utf8")).resolves.toContain("resourceDefinitions.map");
+      await expect(readFile(join(outDir, "frontend/src/api.ts"), "utf8")).resolves.toContain("\"title\": \"Учет книг\"");
     } finally {
       await rm(rootDir, { recursive: true, force: true });
     }
