@@ -65,6 +65,12 @@ Acceptance gate:
 
 Цель: сделать выполнение generated code безопасным для production worker.
 
+Статус: начато. `project-sandbox` теперь изолирует command env от host secrets,
+использует workspace-local HOME/cache/tmp, проверяет realpath для symlink
+escape, запрещает hardlinked files и покрыт тестами на path traversal,
+symlink, hardlink, timeout и command allowlist edge cases. Не закрыто:
+container workspace, resource limits и network policy.
+
 Работы:
 
 - запускать каждый job в отдельном workspace container;
