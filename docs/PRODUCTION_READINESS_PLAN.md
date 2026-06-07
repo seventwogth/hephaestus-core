@@ -69,9 +69,11 @@ Acceptance gate:
 использует workspace-local HOME/cache/tmp, проверяет realpath для symlink
 escape, запрещает hardlinked files, ограничивает размер stdout/stderr,
 эскалирует timeout до SIGKILL и чистит runtime cache dirs после validation.
-Поведение покрыто тестами на path traversal, symlink, hardlink, timeout,
-output limit, cleanup и command allowlist edge cases. Не закрыто: container
-workspace, CPU/memory/disk/process limits и network policy.
+Sandbox validation summary записывается в `GENERATION_REPORT.json`, включая
+failed checks, timeouts, signals и output truncation. Поведение покрыто тестами
+на path traversal, symlink, hardlink, timeout, output limit, cleanup, command
+allowlist edge cases и generation report failure summary. Не закрыто:
+container workspace, CPU/memory/disk/process limits и network policy.
 
 Работы:
 

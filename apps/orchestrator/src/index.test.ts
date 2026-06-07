@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { StubModelProvider, type ModelProvider } from "@hephaestus/hermes-adapter";
+import { type ValidationReport } from "@hephaestus/project-validator";
 import { FileProjectStateStore, Orchestrator } from "./index.js";
 
 describe("Orchestrator", () => {
@@ -115,6 +116,63 @@ describe("Orchestrator", () => {
 
       expect(result.summary).toContain("architect");
       expect(log).toContain("SPEC.json");
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("includes sandbox validation failure modes in the generation report", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
+    const orchestrator = new Orchestrator(new FileProjectStateStore());
+    const validationReport: ValidationReport = {
+      projectDir,
+      passed: false,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      finishedAt: "2026-01-01T00:00:01.000Z",
+      results: [
+        {
+          passed: false,
+          check: {
+            id: "runaway-build",
+            title: "Runaway build",
+            command: "npm",
+            args: ["test"],
+            cwd: ".",
+            required: true
+          },
+          commandResult: {
+            command: "npm",
+            args: ["test"],
+            cwd: projectDir,
+            exitCode: null,
+            stdout: "large output",
+            stderr: "terminated",
+            timedOut: true,
+            stdoutTruncated: true,
+            stderrTruncated: false,
+            signal: "SIGKILL"
+          }
+        }
+      ]
+    };
+
+    try {
+      const report = await orchestrator.writeGenerationReport(projectDir, {
+        validationReport
+      });
+      const reportJson = await readFile(join(projectDir, "GENERATION_REPORT.json"), "utf8");
+
+      expect(report.sandboxValidation).toEqual({
+        validationRan: true,
+        passed: false,
+        commandCount: 1,
+        failedCheckIds: ["runaway-build"],
+        timedOutCheckIds: ["runaway-build"],
+        signaledCheckIds: ["runaway-build"],
+        outputTruncatedCheckIds: ["runaway-build"],
+        failureModes: ["command_failed", "output_truncated", "signal", "timeout"]
+      });
+      expect(reportJson).toContain("\"sandboxValidation\"");
     } finally {
       await rm(projectDir, { recursive: true, force: true });
     }

@@ -131,6 +131,18 @@ export interface GenerationReport {
     coveredFiles: string[];
     missingFromManifest: string[];
   };
+  sandboxValidation: SandboxValidationSummary;
+}
+
+export interface SandboxValidationSummary {
+  validationRan: boolean;
+  passed: boolean | null;
+  commandCount: number;
+  failedCheckIds: string[];
+  timedOutCheckIds: string[];
+  signaledCheckIds: string[];
+  outputTruncatedCheckIds: string[];
+  failureModes: string[];
 }
 
 export class FileProjectStateStore implements ProjectStateStore {
@@ -234,7 +246,8 @@ export class Orchestrator {
     }
 
     await this.writeGenerationReport(projectDir, {
-      noScaffold: options.noScaffold ?? false
+      noScaffold: options.noScaffold ?? false,
+      validationReport
     });
 
     return {
@@ -633,7 +646,7 @@ export class Orchestrator {
 
   async writeGenerationReport(
     projectDir: string,
-    options: { noScaffold?: boolean } = {}
+    options: { noScaffold?: boolean; validationReport?: ValidationReport } = {}
   ): Promise<GenerationReport> {
     const runRecords = await readJsonLines(join(projectDir, "AGENT_RUNS.jsonl"));
     const manifestRecords = await readJsonLines(join(projectDir, "AGENT_MANIFESTS.jsonl"));
@@ -657,7 +670,8 @@ export class Orchestrator {
         filesDeclaredByManifests: filesDeclaredByManifests.size,
         coveredFiles,
         missingFromManifest
-      }
+      },
+      sandboxValidation: buildSandboxValidationSummary(options.validationReport)
     };
 
     await writeJson(join(projectDir, "GENERATION_REPORT.json"), report);
@@ -1144,6 +1158,60 @@ function collectRecordRoles(records: unknown[], nestedProperty?: string): string
   }
 
   return [...roles].sort();
+}
+
+function buildSandboxValidationSummary(report?: ValidationReport): SandboxValidationSummary {
+  if (!report) {
+    return {
+      validationRan: false,
+      passed: null,
+      commandCount: 0,
+      failedCheckIds: [],
+      timedOutCheckIds: [],
+      signaledCheckIds: [],
+      outputTruncatedCheckIds: [],
+      failureModes: []
+    };
+  }
+
+  const failedCheckIds = new Set<string>();
+  const timedOutCheckIds = new Set<string>();
+  const signaledCheckIds = new Set<string>();
+  const outputTruncatedCheckIds = new Set<string>();
+  const failureModes = new Set<string>();
+
+  for (const result of report.results) {
+    if (!result.passed) {
+      failedCheckIds.add(result.check.id);
+      failureModes.add("command_failed");
+    }
+
+    if (result.commandResult.timedOut) {
+      timedOutCheckIds.add(result.check.id);
+      failureModes.add("timeout");
+    }
+
+    if (result.commandResult.signal) {
+      signaledCheckIds.add(result.check.id);
+      failureModes.add("signal");
+    }
+
+    if (result.commandResult.stdoutTruncated || result.commandResult.stderrTruncated) {
+      outputTruncatedCheckIds.add(result.check.id);
+      failureModes.add("output_truncated");
+    }
+  }
+
+  return {
+    validationRan: true,
+    passed: report.passed,
+    commandCount: report.results.length,
+    failedCheckIds: [...failedCheckIds].sort(),
+    timedOutCheckIds: [...timedOutCheckIds].sort(),
+    signaledCheckIds: [...signaledCheckIds].sort(),
+    outputTruncatedCheckIds: [...outputTruncatedCheckIds].sort(),
+    failureModes: [...failureModes].sort()
+  };
 }
 
 function getObjectProperty(value: unknown, property: string): Record<string, unknown> | undefined {
