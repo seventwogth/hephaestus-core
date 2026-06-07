@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, readFile, realpath, lstat, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, realpath, lstat, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve, relative, join } from "node:path";
 
 export interface CommandResult {
@@ -10,12 +10,17 @@ export interface CommandResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+  signal: NodeJS.Signals | null;
 }
 
 export interface SandboxOptions {
   rootDir: string;
   allowedCommands: string[];
   timeoutMs?: number;
+  killGraceMs?: number;
+  maxOutputBytes?: number;
   env?: Record<string, string | undefined>;
   inheritEnv?: string[];
 }
@@ -24,6 +29,8 @@ export class ProjectSandbox {
   private readonly rootDir: string;
   private readonly allowedCommands: Set<string>;
   private readonly timeoutMs: number;
+  private readonly killGraceMs: number;
+  private readonly maxOutputBytes: number;
   private readonly envOverrides: Record<string, string | undefined>;
   private readonly inheritedEnvNames: string[];
 
@@ -31,6 +38,8 @@ export class ProjectSandbox {
     this.rootDir = resolve(options.rootDir);
     this.allowedCommands = new Set(options.allowedCommands);
     this.timeoutMs = options.timeoutMs ?? 120_000;
+    this.killGraceMs = Math.max(0, options.killGraceMs ?? 1_000);
+    this.maxOutputBytes = Math.max(0, options.maxOutputBytes ?? 1_048_576);
     this.envOverrides = options.env ?? {};
     this.inheritedEnvNames = options.inheritEnv ?? [];
   }
@@ -61,37 +70,48 @@ export class ProjectSandbox {
       const child = spawn(command, args, {
         cwd: workingDirectory,
         shell: false,
+        detached: process.platform !== "win32",
         env
       });
 
-      let stdout = "";
-      let stderr = "";
+      let stdout = createLimitedOutputBuffer(this.maxOutputBytes);
+      let stderr = createLimitedOutputBuffer(this.maxOutputBytes);
       let settled = false;
       let timedOut = false;
+      let killTimer: NodeJS.Timeout | undefined;
 
       const timer = setTimeout(() => {
         timedOut = true;
-        child.kill("SIGTERM");
+        killProcessTree(child.pid, "SIGTERM");
+        killTimer = setTimeout(() => {
+          killProcessTree(child.pid, "SIGKILL");
+        }, this.killGraceMs);
       }, this.timeoutMs);
 
       child.stdout.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString("utf8");
+        stdout.append(chunk);
       });
 
       child.stderr.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString("utf8");
+        stderr.append(chunk);
       });
 
       child.on("error", (error) => {
         clearTimeout(timer);
+        if (killTimer) {
+          clearTimeout(killTimer);
+        }
         if (!settled) {
           settled = true;
           reject(error);
         }
       });
 
-      child.on("close", (exitCode) => {
+      child.on("close", (exitCode, signal) => {
         clearTimeout(timer);
+        if (killTimer) {
+          clearTimeout(killTimer);
+        }
         if (!settled) {
           settled = true;
           resolvePromise({
@@ -99,13 +119,23 @@ export class ProjectSandbox {
             args,
             cwd: workingDirectory,
             exitCode,
-            stdout,
-            stderr,
-            timedOut
+            stdout: stdout.toString(),
+            stderr: stderr.toString(),
+            timedOut,
+            stdoutTruncated: stdout.truncated,
+            stderrTruncated: stderr.truncated,
+            signal
           });
         }
       });
     });
+  }
+
+  async cleanupRuntimeDirs(): Promise<void> {
+    const paths = this.getRuntimeDirs();
+    for (const path of paths) {
+      await this.removeRuntimeDir(path);
+    }
   }
 
   resolveInsideRoot(path: string): string {
@@ -120,9 +150,7 @@ export class ProjectSandbox {
   }
 
   private async buildCommandEnv(): Promise<Record<string, string>> {
-    const homeDir = join(this.rootDir, ".hephaestus-home");
-    const tmpDir = join(this.rootDir, ".hephaestus-tmp");
-    const cacheDir = join(this.rootDir, ".hephaestus-cache");
+    const { homeDir, tmpDir, cacheDir } = this.getRuntimeDirMap();
     const env: Record<string, string> = {};
 
     await mkdir(homeDir, { recursive: true });
@@ -156,6 +184,58 @@ export class ProjectSandbox {
     }
 
     return env;
+  }
+
+  private getRuntimeDirMap(): { homeDir: string; tmpDir: string; cacheDir: string } {
+    return {
+      homeDir: join(this.rootDir, ".hephaestus-home"),
+      tmpDir: join(this.rootDir, ".hephaestus-tmp"),
+      cacheDir: join(this.rootDir, ".hephaestus-cache")
+    };
+  }
+
+  private getRuntimeDirs(): string[] {
+    const { homeDir, tmpDir, cacheDir } = this.getRuntimeDirMap();
+    return [homeDir, tmpDir, cacheDir];
+  }
+
+  private async removeRuntimeDir(path: string): Promise<void> {
+    try {
+      await this.chmodRecursive(path);
+      await rm(path, { recursive: true, force: true });
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+        return;
+      }
+
+      throw error;
+    }
+  }
+
+  private async chmodRecursive(path: string): Promise<void> {
+    let info;
+    try {
+      info = await lstat(path);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+        return;
+      }
+
+      throw error;
+    }
+
+    if (info.isSymbolicLink()) {
+      return;
+    }
+
+    await chmod(path, 0o700);
+
+    if (!info.isDirectory()) {
+      return;
+    }
+
+    const entries = await readdir(path);
+    await Promise.all(entries.map((entry) => this.chmodRecursive(join(path, entry))));
   }
 
   private async assertSafeWorkingDirectory(target: string, requestedPath: string): Promise<void> {
@@ -221,6 +301,66 @@ function copyEnvIfSet(env: Record<string, string>, name: string): void {
   const value = process.env[name];
   if (value !== undefined) {
     env[name] = value;
+  }
+}
+
+function createLimitedOutputBuffer(maxBytes: number): {
+  append(chunk: Buffer): void;
+  toString(): string;
+  readonly truncated: boolean;
+} {
+  let output = "";
+  let bytes = 0;
+  let truncated = false;
+
+  return {
+    append(chunk: Buffer) {
+      if (bytes >= maxBytes) {
+        truncated = true;
+        return;
+      }
+
+      const remainingBytes = maxBytes - bytes;
+      if (chunk.byteLength <= remainingBytes) {
+        output += chunk.toString("utf8");
+        bytes += chunk.byteLength;
+        return;
+      }
+
+      output += chunk.subarray(0, remainingBytes).toString("utf8");
+      bytes = maxBytes;
+      truncated = true;
+    },
+    toString() {
+      return output;
+    },
+    get truncated() {
+      return truncated;
+    }
+  };
+}
+
+function killProcessTree(pid: number | undefined, signal: NodeJS.Signals): void {
+  if (!pid) {
+    return;
+  }
+
+  try {
+    process.kill(process.platform === "win32" ? pid : -pid, signal);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ESRCH") {
+      return;
+    }
+
+    try {
+      process.kill(pid, signal);
+    } catch (fallbackError) {
+      if (fallbackError instanceof Error && "code" in fallbackError && fallbackError.code === "ESRCH") {
+        return;
+      }
+
+      throw fallbackError;
+    }
   }
 }
 

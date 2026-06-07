@@ -64,7 +64,10 @@ describe("project validator", () => {
             exitCode: 0,
             stdout: "v1\n",
             stderr: "",
-            timedOut: false
+            timedOut: false,
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            signal: null
           }
         }
       ]

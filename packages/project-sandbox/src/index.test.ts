@@ -1,4 +1,4 @@
-import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -135,6 +135,47 @@ describe("ProjectSandbox", () => {
       expect(result.timedOut).toBe(true);
       expect(result.exitCode).not.toBe(0);
     } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("caps command output and reports truncation", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "hephaestus-sandbox-"));
+    const sandbox = new ProjectSandbox({
+      rootDir,
+      allowedCommands: ["/usr/bin/printf"],
+      maxOutputBytes: 5
+    });
+
+    try {
+      const result = await sandbox.run("/usr/bin/printf", ["abcdefghijklmnop"]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("abcde");
+      expect(result.stdoutTruncated).toBe(true);
+      expect(result.stderrTruncated).toBe(false);
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans workspace runtime directories with read-only cache files", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "hephaestus-sandbox-"));
+    const sandbox = new ProjectSandbox({ rootDir, allowedCommands: ["/usr/bin/env"] });
+    const readOnlyCacheFile = join(rootDir, ".hephaestus-cache", "go-mod", "readonly.txt");
+
+    try {
+      await sandbox.run("/usr/bin/env");
+      await writeFile(readOnlyCacheFile, "cached", "utf8");
+      await chmod(readOnlyCacheFile, 0o400);
+
+      await sandbox.cleanupRuntimeDirs();
+
+      await expect(access(join(rootDir, ".hephaestus-home"))).rejects.toThrow();
+      await expect(access(join(rootDir, ".hephaestus-tmp"))).rejects.toThrow();
+      await expect(access(join(rootDir, ".hephaestus-cache"))).rejects.toThrow();
+    } finally {
+      await chmod(rootDir, 0o700);
       await rm(rootDir, { recursive: true, force: true });
     }
   });

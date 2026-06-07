@@ -104,14 +104,18 @@ export async function validateGeneratedWebApp(
 
   const results: ValidationCheckResult[] = [];
 
-  for (const check of checks) {
-    const commandResult = await sandbox.run(check.command, check.args, check.cwd);
-    const passed = commandResult.exitCode === 0 && !commandResult.timedOut;
-    results.push({ check, commandResult, passed });
+  try {
+    for (const check of checks) {
+      const commandResult = await sandbox.run(check.command, check.args, check.cwd);
+      const passed = commandResult.exitCode === 0 && !commandResult.timedOut;
+      results.push({ check, commandResult, passed });
 
-    if (!passed && check.required) {
-      break;
+      if (!passed && check.required) {
+        break;
+      }
     }
+  } finally {
+    await sandbox.cleanupRuntimeDirs();
   }
 
   const report: ValidationReport = {
@@ -151,19 +155,28 @@ export function renderReviewMarkdown(report: ValidationReport): string {
     lines.push(`- Команда: \`${command}\``);
     lines.push(`- Директория: \`${result.check.cwd}\``);
     lines.push(`- Код выхода: ${result.commandResult.exitCode ?? "нет"}`);
+    lines.push(`- Сигнал: ${result.commandResult.signal ?? "нет"}`);
     lines.push(`- Таймаут: ${result.commandResult.timedOut ? "да" : "нет"}`);
-    appendOutput(lines, "stdout", result.commandResult.stdout);
-    appendOutput(lines, "stderr", result.commandResult.stderr);
+    appendOutput(lines, "stdout", result.commandResult.stdout, result.commandResult.stdoutTruncated);
+    appendOutput(lines, "stderr", result.commandResult.stderr, result.commandResult.stderrTruncated);
     lines.push("");
   }
 
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
-function appendOutput(lines: string[], title: string, output: string): void {
+function appendOutput(lines: string[], title: string, output: string, truncated: boolean): void {
   const trimmedOutput = output.trim();
   if (!trimmedOutput) {
+    if (truncated) {
+      lines.push(`- ${title} был обрезан sandbox output limit`);
+    }
+
     return;
+  }
+
+  if (truncated) {
+    lines.push(`- ${title} был обрезан sandbox output limit`);
   }
 
   lines.push("");

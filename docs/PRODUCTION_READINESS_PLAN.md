@@ -67,9 +67,11 @@ Acceptance gate:
 
 Статус: начато. `project-sandbox` теперь изолирует command env от host secrets,
 использует workspace-local HOME/cache/tmp, проверяет realpath для symlink
-escape, запрещает hardlinked files и покрыт тестами на path traversal,
-symlink, hardlink, timeout и command allowlist edge cases. Не закрыто:
-container workspace, resource limits и network policy.
+escape, запрещает hardlinked files, ограничивает размер stdout/stderr,
+эскалирует timeout до SIGKILL и чистит runtime cache dirs после validation.
+Поведение покрыто тестами на path traversal, symlink, hardlink, timeout,
+output limit, cleanup и command allowlist edge cases. Не закрыто: container
+workspace, CPU/memory/disk/process limits и network policy.
 
 Работы:
 
