@@ -10,6 +10,7 @@
 | Go | 1.24.x | Generated Go backend template |
 | Docker Engine | 24.x+ | Generated project runtime и production smoke checks |
 | Docker Compose | v2.x | `packages/templates/generated-webapp/docker-compose.yml` |
+| Validation image | `hephaestus/validation:local` | Docker runner для sandbox validation commands |
 | Ollama | текущая локальная stable-версия | Local model runtime для Hermes/Ollama agent stages |
 
 ## CI baseline
@@ -17,7 +18,7 @@
 GitHub Actions запускает production-readiness baseline на Ubuntu:
 
 - root workspace: `npm ci`, `npm run check:lockfile`, `npm test`,
-  `npm run typecheck`, `npm run build`;
+  `npm run typecheck`, `npm run build`, `npm run build:validation-image`;
 - generated webapp template: `docker compose config`, Go backend tests,
   frontend `npm ci`, frontend tests and frontend build.
 
@@ -28,3 +29,6 @@ GitHub Actions запускает production-readiness baseline на Ubuntu:
   который умеет читать pnpm workspace; release checks не используют pnpm.
 - Frontend сгенерированного приложения может требовать доступ к npm registry
   во время установки зависимостей.
+- Docker sandbox runner включается через `HEPHAESTUS_SANDBOX_RUNNER=docker`.
+  По умолчанию используется host runner, чтобы local/dev flow не требовал
+  validation image.

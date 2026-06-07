@@ -6,7 +6,7 @@
 - Создан базовый монорепозиторий ядра Hephaestus.
 - Добавлен CI baseline для `main` и PR: root workspace проходит `npm ci`, lockfile consistency check, tests, typecheck и build, а шаблон generated-webapp отдельно проверяет Docker Compose config, Go tests и frontend build.
 - Добавлены release checklist и supported runtime matrix для production-readiness baseline.
-- Усилен `project-sandbox`: команды запускаются с минимальным env без host secrets, workspace-local HOME/cache/tmp, timeout telemetry, kill escalation, output limit, realpath-проверками symlink escape и запретом hardlinked files; sandbox failure modes попадают в `GENERATION_REPORT.json`; добавлен опциональный Docker runner interface с bind-mounted workspace и базовыми resource/network параметрами.
+- Усилен `project-sandbox`: команды запускаются с минимальным env без host secrets, workspace-local HOME/cache/tmp, timeout telemetry, kill escalation, output limit, realpath-проверками symlink escape и запретом hardlinked files; sandbox failure modes попадают в `GENERATION_REPORT.json`; добавлен опциональный Docker runner interface с bind-mounted workspace, validation image и базовыми resource/network параметрами.
 - Добавлены контракты артефактов `SPEC`, `PLAN`, `TASKS` и `STATUS`.
 - Добавлен шаблон генерируемого приложения с frontend, backend, Docker Compose и тестами.
 - Добавлен механизм создания проекта из шаблона.
@@ -36,7 +36,7 @@
 
 ## Частично сделано
 
-- Phase 1 sandbox hardening начат: file/path boundary, command env isolation, runtime cache cleanup, timeout escalation, output limit, generation report failure summary и Docker runner command interface покрыты тестами, но ещё нет обязательного container validation image, disk limits и network policy по стадиям.
+- Phase 1 sandbox hardening начат: file/path boundary, command env isolation, runtime cache cleanup, timeout escalation, output limit, generation report failure summary, Docker runner command interface, validation image и env-based worker/CLI wiring покрыты тестами/smoke checks, но ещё нет disk limits и network policy по стадиям.
 - Оркестратор теперь умеет проходить основные этапы через LLM, но детерминированные генераторы всё ещё остаются fallback-путём и частью legacy-команд `requirements/plan/generate-*`.
 - Telegram-бот теперь переживает рестарты по session/queue state и умеет работать в разделенном `poll/worker` режиме, но ещё нет готовых service units для systemd/launchd/Windows Service.
 - Промпты agent stages уже охватывают full-stack flow, но качество результата всё ещё зависит от силы локальной модели и пока не разделено на более узкие под-агенты по доменам.
@@ -44,7 +44,7 @@
 
 ## Следующие крупные шаги
 
-1. Продолжить Phase 1 production roadmap: добавить production validation image, включение Docker runner для worker validation, disk limits и network policy по стадиям.
+1. Продолжить Phase 1 production roadmap: добавить disk limits и network policy по стадиям для Docker runner.
 2. Добавить готовые service templates для `systemd`, `launchd` и Windows Service, чтобы `poll` и `worker` поднимались как фоновые сервисы.
 3. Добавить команды управления заданиями из Telegram: повторный запуск, отмена pending job, просмотр детального лога и путь к последнему проекту.
 4. Расширить backend/frontend генераторы и агентные промпты с одной основной сущности до нескольких связанных ресурсов поверх уже расширенного DB-плана.

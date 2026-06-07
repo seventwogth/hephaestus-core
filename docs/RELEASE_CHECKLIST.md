@@ -11,6 +11,7 @@
 - `npm test` проходит.
 - `npm run typecheck` проходит.
 - `npm run build` проходит.
+- `npm run build:validation-image` собирает `hephaestus/validation:local`.
 - Для `packages/templates/generated-webapp` проходят:
   - `docker compose config`;
   - `go test ./...` в `backend`;

@@ -74,9 +74,10 @@ failed checks, timeouts, signals и output truncation. Поведение пок
 на path traversal, symlink, hardlink, timeout, output limit, cleanup, command
 allowlist edge cases, generation report failure summary и Docker runner command
 interface. Docker runner уже умеет формировать запуск с bind-mounted workspace,
-controlled env, network mode и базовыми CPU/memory/pids параметрами. Не закрыто:
-production validation image, включение container validation в worker, disk
-limits и network policy по стадиям.
+controlled env, network mode и базовыми CPU/memory/pids параметрами. Добавлен
+validation image `hephaestus/validation:local`, CI проверяет его сборку, а
+CLI/Telegram worker могут включать Docker runner через `HEPHAESTUS_SANDBOX_*`.
+Не закрыто: disk limits и network policy по стадиям.
 
 Работы:
 

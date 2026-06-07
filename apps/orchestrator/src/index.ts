@@ -31,6 +31,9 @@ import {
   type ProjectTask
 } from "@hephaestus/contracts";
 
+export { parseSandboxRunnerFromEnv } from "@hephaestus/project-sandbox";
+export type { SandboxRunnerOptions } from "@hephaestus/project-sandbox";
+
 export type Stage =
   | "NEW"
   | "REQUIREMENTS"

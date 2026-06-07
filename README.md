@@ -142,6 +142,16 @@ export HEPHAESTUS_AVAILABLE_MODELS="qwen2.5-coder:7b|Qwen 7B|Быстрее,qwen
 - `HEPHAESTUS_MODEL_RUNTIME_MAP` — ручное сопоставление id модели и runtime, например `quality=ollama:qwen2.5-coder:14b`
 - `HEPHAESTUS_OLLAMA_TIMEOUT_MS` — таймаут одного LLM agent run
 - `HEPHAESTUS_NO_SCAFFOLD=true` — agent-only режим: шаблон приложения не копируется, runnable code создаётся агентами с нуля
+- `HEPHAESTUS_SANDBOX_RUNNER=docker` — запуск validation-команд внутри Docker runner вместо host-runner
+- `HEPHAESTUS_SANDBOX_IMAGE` — образ для validation runner, по умолчанию `hephaestus/validation:local`
+- `HEPHAESTUS_SANDBOX_NETWORK` — network mode для validation runner, по умолчанию `none`
+- `HEPHAESTUS_SANDBOX_CPUS`, `HEPHAESTUS_SANDBOX_MEMORY`, `HEPHAESTUS_SANDBOX_PIDS_LIMIT` — базовые лимиты Docker runner
+
+Validation image можно собрать локально:
+
+```bash
+npm run build:validation-image
+```
 
 ### 6. Запустить Telegram-бота
 

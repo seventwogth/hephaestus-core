@@ -18,6 +18,18 @@ export interface DockerSandboxRunnerOptions {
   pidsLimit?: number;
 }
 
+export interface SandboxRunnerEnv {
+  HEPHAESTUS_SANDBOX_RUNNER?: string;
+  HEPHAESTUS_SANDBOX_IMAGE?: string;
+  HEPHAESTUS_SANDBOX_DOCKER_COMMAND?: string;
+  HEPHAESTUS_SANDBOX_WORKSPACE_MOUNT?: string;
+  HEPHAESTUS_SANDBOX_NETWORK?: string;
+  HEPHAESTUS_SANDBOX_USER?: string;
+  HEPHAESTUS_SANDBOX_CPUS?: string;
+  HEPHAESTUS_SANDBOX_MEMORY?: string;
+  HEPHAESTUS_SANDBOX_PIDS_LIMIT?: string;
+}
+
 export interface CommandResult {
   command: string;
   args: string[];
@@ -406,6 +418,30 @@ export function buildCommandSpec(input: CommandSpecInput): CommandSpec {
 }
 
 const DEFAULT_CONTAINER_WORKSPACE = "/workspace";
+const DEFAULT_VALIDATION_IMAGE = "hephaestus/validation:local";
+
+export function parseSandboxRunnerFromEnv(env: SandboxRunnerEnv = process.env): SandboxRunnerOptions | undefined {
+  const runner = env.HEPHAESTUS_SANDBOX_RUNNER?.trim().toLowerCase();
+  if (!runner || runner === "host") {
+    return undefined;
+  }
+
+  if (runner !== "docker") {
+    throw new Error(`Unsupported HEPHAESTUS_SANDBOX_RUNNER value: ${env.HEPHAESTUS_SANDBOX_RUNNER}`);
+  }
+
+  return {
+    type: "docker",
+    image: env.HEPHAESTUS_SANDBOX_IMAGE?.trim() || DEFAULT_VALIDATION_IMAGE,
+    dockerCommand: optionalTrimmed(env.HEPHAESTUS_SANDBOX_DOCKER_COMMAND),
+    workspaceMount: optionalTrimmed(env.HEPHAESTUS_SANDBOX_WORKSPACE_MOUNT),
+    network: optionalTrimmed(env.HEPHAESTUS_SANDBOX_NETWORK) ?? "none",
+    user: optionalTrimmed(env.HEPHAESTUS_SANDBOX_USER),
+    cpus: optionalTrimmed(env.HEPHAESTUS_SANDBOX_CPUS),
+    memory: optionalTrimmed(env.HEPHAESTUS_SANDBOX_MEMORY),
+    pidsLimit: parseOptionalPositiveInteger("HEPHAESTUS_SANDBOX_PIDS_LIMIT", env.HEPHAESTUS_SANDBOX_PIDS_LIMIT)
+  };
+}
 
 function copyEnvIfSet(env: Record<string, string>, name: string): void {
   const value = process.env[name];
@@ -426,6 +462,25 @@ function buildDockerHostEnv(): Record<string, string> {
 function toContainerPath(workspaceMount: string, path: string): string {
   const normalizedPath = path === "." ? "" : path.replace(/^\/+/, "");
   return normalizedPath ? join(workspaceMount, normalizedPath) : workspaceMount;
+}
+
+function optionalTrimmed(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function parseOptionalPositiveInteger(name: string, value: string | undefined): number | undefined {
+  const trimmed = optionalTrimmed(value);
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`Invalid ${name} value: ${value}`);
+  }
+
+  return parsed;
 }
 
 function createLimitedOutputBuffer(maxBytes: number): {

@@ -42,6 +42,9 @@ jobs:
       - name: Build packages
         run: npm run build
 
+      - name: Build validation sandbox image
+        run: npm run build:validation-image
+
   generated-webapp:
     name: Generated webapp template
     runs-on: ubuntu-latest

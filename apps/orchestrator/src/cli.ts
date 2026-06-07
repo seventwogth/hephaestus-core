@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { analyzeRequirements, createArchitecturePlan } from "@hephaestus/agents";
 import { projectSpecSchema } from "@hephaestus/contracts";
 import { createLocalModelProvider, type ModelProvider } from "@hephaestus/hermes-adapter";
+import { parseSandboxRunnerFromEnv } from "@hephaestus/project-sandbox";
 import {
   generateDatabaseArtifacts,
   generateGoBackend,
@@ -241,7 +242,11 @@ export async function validateProjectDirectory(
   checks?: ValidationCheck[]
 ): Promise<boolean> {
   const projectDir = resolve(options.projectDir);
-  const report = await validateGeneratedWebApp({ projectDir, checks });
+  const report = await validateGeneratedWebApp({
+    projectDir,
+    checks,
+    runner: parseSandboxRunnerFromEnv()
+  });
   return report.passed;
 }
 
@@ -259,6 +264,7 @@ export async function bootstrapProjectFromDescription(
     noScaffold: options.noScaffold,
     runValidation: options.runValidation,
     autoFix: options.autoFix,
+    sandboxRunner: parseSandboxRunnerFromEnv(),
     ...bootstrapOptions
   });
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { resolve } from "node:path";
+import { parseSandboxRunnerFromEnv } from "@hephaestus/orchestrator";
 import {
   FilePollingOffsetStore,
   FileProjectJobQueue,
@@ -33,7 +34,8 @@ async function main(): Promise<void> {
     outputRoot: projectsDir,
     createModelProvider: (model) => createModelProviderForOption(model),
     bootstrapOptions: {
-      noScaffold
+      noScaffold,
+      sandboxRunner: parseSandboxRunnerFromEnv()
     }
   });
   const bot = new HephaestusTelegramBot({

@@ -2,7 +2,7 @@ import { access, chmod, link, mkdir, mkdtemp, rm, symlink, writeFile } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { buildCommandSpec, ProjectSandbox } from "./index.js";
+import { buildCommandSpec, parseSandboxRunnerFromEnv, ProjectSandbox } from "./index.js";
 
 describe("ProjectSandbox", () => {
   it("reads and writes only inside the project root", async () => {
@@ -240,5 +240,36 @@ describe("ProjectSandbox", () => {
       "test"
     ]);
     expect(spec.hostEnv).not.toHaveProperty("HEPHAESTUS_EXPLICIT_ENV");
+  });
+
+  it("parses docker sandbox runner settings from env", () => {
+    expect(
+      parseSandboxRunnerFromEnv({
+        HEPHAESTUS_SANDBOX_RUNNER: "docker",
+        HEPHAESTUS_SANDBOX_IMAGE: "hephaestus/validation:prod",
+        HEPHAESTUS_SANDBOX_NETWORK: "bridge",
+        HEPHAESTUS_SANDBOX_CPUS: "2",
+        HEPHAESTUS_SANDBOX_MEMORY: "1g",
+        HEPHAESTUS_SANDBOX_PIDS_LIMIT: "256"
+      })
+    ).toEqual({
+      type: "docker",
+      image: "hephaestus/validation:prod",
+      dockerCommand: undefined,
+      workspaceMount: undefined,
+      network: "bridge",
+      user: undefined,
+      cpus: "2",
+      memory: "1g",
+      pidsLimit: 256
+    });
+  });
+
+  it("rejects unsupported sandbox runner env values", () => {
+    expect(() => parseSandboxRunnerFromEnv({ HEPHAESTUS_SANDBOX_RUNNER: "firecracker" })).toThrow("Unsupported");
+    expect(() => parseSandboxRunnerFromEnv({
+      HEPHAESTUS_SANDBOX_RUNNER: "docker",
+      HEPHAESTUS_SANDBOX_PIDS_LIMIT: "0"
+    })).toThrow("Invalid HEPHAESTUS_SANDBOX_PIDS_LIMIT");
   });
 });
