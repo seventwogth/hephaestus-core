@@ -157,6 +157,7 @@ export class Orchestrator {
     }
 
     await this.planProject(projectDir);
+    await this.generateApiContractStage(projectDir, { noScaffold: options.noScaffold ?? false });
     await this.generateDatabaseStage(projectDir, { noScaffold: options.noScaffold ?? false });
     await this.generateBackendStage(projectDir, { noScaffold: options.noScaffold ?? false });
     await this.generateFrontendStage(projectDir, { noScaffold: options.noScaffold ?? false });
@@ -194,9 +195,10 @@ export class Orchestrator {
     await this.store.writeTasks(projectDir, [
       { id: "requirements", type: "requirements", status: "done", dependsOn: [], files: ["SPEC.json"] },
       { id: "architecture", type: "architecture", status: "pending", dependsOn: ["requirements"], files: ["PLAN.json"] },
-      { id: "database", type: "database", status: "pending", dependsOn: ["architecture"], files: ["backend/migrations"] },
-      { id: "backend", type: "backend", status: "pending", dependsOn: ["database"], files: ["backend"] },
-      { id: "frontend", type: "frontend", status: "pending", dependsOn: ["backend"], files: ["frontend"] },
+      { id: "api", type: "api", status: "pending", dependsOn: ["architecture"], files: ["openapi.json"] },
+      { id: "database", type: "database", status: "pending", dependsOn: ["api"], files: ["backend/migrations"] },
+      { id: "backend", type: "backend", status: "pending", dependsOn: ["database", "api"], files: ["backend"] },
+      { id: "frontend", type: "frontend", status: "pending", dependsOn: ["backend", "api"], files: ["frontend"] },
       { id: "integration", type: "integration", status: "pending", dependsOn: ["frontend"], files: ["docker-compose.yml"] },
       { id: "testing", type: "testing", status: "pending", dependsOn: ["integration"], files: ["REVIEW.md"] },
       { id: "fixing", type: "fixing", status: "pending", dependsOn: ["testing"], files: ["REVIEW.md", "AGENT_RUNS.jsonl"] },
@@ -228,6 +230,35 @@ export class Orchestrator {
     return plan;
   }
 
+  async generateApiContractStage(
+    projectDir: string,
+    options: { noScaffold?: boolean } = {}
+  ): Promise<void> {
+    const plan = await this.store.readPlan(projectDir);
+    const spec = await this.store.readSpec(projectDir);
+    if (!plan || !spec) {
+      throw new Error("SPEC.json или PLAN.json не найден");
+    }
+
+    await this.setStage(projectDir, "GENERATING");
+    await this.updateTaskStatus(projectDir, "api", "in_progress");
+
+    if (this.modelProvider && options.noScaffold) {
+      await this.runAgentStage(projectDir, {
+        role: "api",
+        instruction: buildOpenApiInstruction(plan),
+        contextFiles: ["REQUEST.md", "SPEC.json", "PLAN.json"],
+        writableFiles: ["openapi.json", "README.md"],
+        validationCommand: "cat openapi.json",
+        requireManifest: true
+      });
+    } else {
+      await writeFile(join(projectDir, "openapi.json"), `${JSON.stringify(renderOpenApiDocument(spec, plan), null, 2)}\n`, "utf8");
+    }
+
+    await this.updateTaskStatus(projectDir, "api", "done");
+  }
+
   async generateBackendStage(
     projectDir: string,
     options: { noScaffold?: boolean } = {}
@@ -245,10 +276,11 @@ export class Orchestrator {
         role: "backend",
         instruction: buildBackendInstruction(plan, options),
         contextFiles: options.noScaffold
-          ? ["REQUEST.md", "SPEC.json", "PLAN.json", "AGENT_RUNS.jsonl"]
+          ? ["REQUEST.md", "SPEC.json", "PLAN.json", "openapi.json", "AGENT_RUNS.jsonl"]
           : [
               "SPEC.json",
               "PLAN.json",
+              "openapi.json",
               "backend/go.mod",
               "backend/cmd/api/main.go",
               "backend/internal/http/router.go",
@@ -288,10 +320,11 @@ export class Orchestrator {
         role: "database",
         instruction: buildDatabaseInstruction(plan, options),
         contextFiles: options.noScaffold
-          ? ["REQUEST.md", "SPEC.json", "PLAN.json", "AGENT_RUNS.jsonl"]
+          ? ["REQUEST.md", "SPEC.json", "PLAN.json", "openapi.json", "AGENT_RUNS.jsonl"]
           : [
               "SPEC.json",
               "PLAN.json",
+              "openapi.json",
               "backend/migrations/0001_generated_schema.sql",
               "backend/internal/platform/database/database.go",
               "backend/internal/platform/database/migrate.go",
@@ -328,10 +361,11 @@ export class Orchestrator {
         role: "frontend",
         instruction: buildFrontendInstruction(plan, options),
         contextFiles: options.noScaffold
-          ? ["REQUEST.md", "SPEC.json", "PLAN.json", "AGENT_RUNS.jsonl"]
+          ? ["REQUEST.md", "SPEC.json", "PLAN.json", "openapi.json", "AGENT_RUNS.jsonl"]
           : [
               "SPEC.json",
               "PLAN.json",
+              "openapi.json",
               "frontend/package.json",
               "frontend/src/main.tsx",
               "frontend/src/App.tsx",
@@ -373,6 +407,7 @@ export class Orchestrator {
               "REQUEST.md",
               "SPEC.json",
               "PLAN.json",
+              "openapi.json",
               "backend/go.mod",
               "backend/cmd/api/main.go",
               "frontend/package.json",
@@ -422,6 +457,7 @@ export class Orchestrator {
           "REQUEST.md",
           "SPEC.json",
           "PLAN.json",
+          "openapi.json",
           "REVIEW.md",
           "docker-compose.yml",
           "backend/go.mod",
@@ -819,6 +855,16 @@ function buildPlanInstruction(): string {
   ].join("\n");
 }
 
+function buildOpenApiInstruction(plan: ProjectPlan): string {
+  return [
+    `Сформируй openapi.json для проекта ${plan.projectName} как валидный OpenAPI 3.0 JSON без markdown.`,
+    "Используй SPEC.json и PLAN.json как источник истины.",
+    "Опиши paths для всех endpoints из PLAN.json, базовые request/response schemas для ресурсов и health endpoints.",
+    "No-scaffold режим: backend и frontend будут опираться на этот контракт, поэтому пути, методы и JSON поля должны быть стабильными.",
+    "Возвращай полное содержимое openapi.json."
+  ].join("\n");
+}
+
 function buildDatabaseInstruction(
   plan: ProjectPlan,
   options: { noScaffold?: boolean } = {}
@@ -894,6 +940,101 @@ function buildDocumentationInstruction(spec: ProjectSpec, plan: ProjectPlan): st
     "основные команды запуска, структуру каталогов и ключевые endpoints.",
     "Пиши по-русски и возвращай полное содержимое README.md."
   ].join("\n");
+}
+
+function renderOpenApiDocument(spec: ProjectSpec, plan: ProjectPlan): Record<string, unknown> {
+  return {
+    openapi: "3.0.3",
+    info: {
+      title: plan.projectName,
+      version: "0.1.0",
+      description: spec.description
+    },
+    paths: Object.fromEntries(
+      plan.endpoints.map((endpoint) => [
+        endpoint.path,
+        {
+          [endpoint.method.toLowerCase()]: {
+            summary: endpoint.summary,
+            security: endpoint.authRequired ? [{ bearerAuth: [] }] : [],
+            responses: {
+              "200": {
+                description: "Successful response"
+              },
+              "400": {
+                description: "Invalid request"
+              },
+              "404": {
+                description: "Not found"
+              },
+              "500": {
+                description: "Internal server error"
+              }
+            }
+          }
+        }
+      ])
+    ),
+    components: {
+      securitySchemes: {
+        bearerAuth: {
+          type: "http",
+          scheme: "bearer",
+          bearerFormat: "JWT"
+        }
+      },
+      schemas: Object.fromEntries(
+        plan.databaseEntities.map((entity) => [
+          entity.name,
+          {
+            type: "object",
+            properties: Object.fromEntries([
+              ["id", { type: "string" }],
+              ...entity.fields.map((field) => [
+                toJsonSchemaPropertyName(field.name),
+                renderJsonSchemaProperty(field.type)
+              ])
+            ]),
+            required: [
+              "id",
+              ...entity.fields
+                .filter((field) => field.required)
+                .map((field) => toJsonSchemaPropertyName(field.name))
+            ]
+          }
+        ])
+      )
+    }
+  };
+}
+
+function toJsonSchemaPropertyName(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+}
+
+function renderJsonSchemaProperty(type: ProjectSpec["entities"][number]["fields"][number]["type"]): Record<string, string> {
+  switch (type) {
+    case "integer":
+      return { type: "integer" };
+    case "number":
+      return { type: "number" };
+    case "boolean":
+      return { type: "boolean" };
+    case "date":
+      return { type: "string", format: "date" };
+    case "datetime":
+      return { type: "string", format: "date-time" };
+    case "json":
+      return { type: "object" };
+    case "text":
+    case "string":
+    default:
+      return { type: "string" };
+  }
 }
 
 function ensureTrailingNewline(value: string): string {

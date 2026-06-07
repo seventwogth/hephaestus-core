@@ -105,7 +105,7 @@ export const projectPlanSchema = z.object({
 
 export const taskSchema = z.object({
   id: z.string().min(1),
-  type: z.enum(["requirements", "architecture", "database", "backend", "frontend", "integration", "testing", "fixing", "documentation"]),
+  type: z.enum(["requirements", "architecture", "api", "database", "backend", "frontend", "integration", "testing", "fixing", "documentation"]),
   status: z.enum(["pending", "in_progress", "done", "failed"]),
   dependsOn: z.array(z.string().min(1)).default([]),
   files: z.array(z.string().min(1)).default([])

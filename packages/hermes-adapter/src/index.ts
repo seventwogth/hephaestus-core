@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 export type AgentRole =
   | "requirements"
   | "architect"
+  | "api"
   | "database"
   | "backend"
   | "frontend"

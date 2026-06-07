@@ -35,7 +35,8 @@ describe("Orchestrator", () => {
       const tasks = JSON.parse(await readFile(join(projectDir, "TASKS.json"), "utf8"));
 
       expect(status.stage).toBe("SPEC_APPROVAL");
-      expect(tasks.tasks).toHaveLength(9);
+      expect(tasks.tasks).toHaveLength(10);
+      expect(tasks.tasks.map((task: { id: string }) => task.id)).toContain("api");
     } finally {
       await rm(projectDir, { recursive: true, force: true });
     }
@@ -354,6 +355,46 @@ describe("Orchestrator", () => {
           };
         }
 
+        if (input.role === "api") {
+          expect(input.instruction).toContain("openapi.json");
+          return {
+            role: input.role,
+            summary: "Created OpenAPI contract",
+            changedFiles: ["openapi.json"],
+            updatedFiles: [
+              {
+                path: "openapi.json",
+                content: `${JSON.stringify({
+                  openapi: "3.0.3",
+                  info: {
+                    title: "agent-only-books",
+                    version: "0.1.0"
+                  },
+                  paths: {
+                    "/api/books": {
+                      get: {
+                        summary: "List books",
+                        responses: {
+                          "200": {
+                            description: "OK"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }, null, 2)}\n`
+              }
+            ],
+            manifest: {
+              createdFiles: ["openapi.json"],
+              updatedFiles: [],
+              validationCommands: ["cat openapi.json"],
+              notes: ["Created OpenAPI contract from PLAN"]
+            },
+            rawOutput: "api"
+          };
+        }
+
         if (input.role === "backend") {
           return {
             role: input.role,
@@ -544,6 +585,46 @@ describe("Orchestrator", () => {
           };
         }
 
+        if (input.role === "api") {
+          expect(input.instruction).toContain("openapi.json");
+          return {
+            role: input.role,
+            summary: "Created OpenAPI contract",
+            changedFiles: ["openapi.json"],
+            updatedFiles: [
+              {
+                path: "openapi.json",
+                content: `${JSON.stringify({
+                  openapi: "3.0.3",
+                  info: {
+                    title: "agent-only-books",
+                    version: "0.1.0"
+                  },
+                  paths: {
+                    "/api/books": {
+                      get: {
+                        summary: "List books",
+                        responses: {
+                          "200": {
+                            description: "OK"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }, null, 2)}\n`
+              }
+            ],
+            manifest: {
+              createdFiles: ["openapi.json"],
+              updatedFiles: [],
+              validationCommands: ["cat openapi.json"],
+              notes: ["Created OpenAPI contract from PLAN"]
+            },
+            rawOutput: "api"
+          };
+        }
+
         if (input.role === "database") {
           expect(input.files.map((file) => file.path)).not.toContain("backend/migrations/0001_generated_schema.sql");
           expect(input.instruction).toContain("No-scaffold");
@@ -659,6 +740,7 @@ describe("Orchestrator", () => {
       });
 
       await expect(readFile(join(projectDir, "backend/go.mod"), "utf8")).resolves.toContain("agent-only-books");
+      await expect(readFile(join(projectDir, "openapi.json"), "utf8")).resolves.toContain("/api/books");
       await expect(readFile(join(projectDir, "frontend/src/main.tsx"), "utf8")).resolves.toContain("agent-only-books");
       await expect(readFile(join(projectDir, "docker-compose.yml"), "utf8")).resolves.toContain("build: ./backend");
       await expect(readFile(join(projectDir, "backend/internal/http/router.go"), "utf8")).rejects.toThrow();
@@ -685,6 +767,33 @@ describe("Orchestrator", () => {
               }
             ],
             rawOutput: "database"
+          };
+        }
+
+        if (input.role === "api") {
+          return {
+            role: input.role,
+            summary: "Created OpenAPI contract",
+            changedFiles: ["openapi.json"],
+            updatedFiles: [
+              {
+                path: "openapi.json",
+                content: `${JSON.stringify({
+                  openapi: "3.0.3",
+                  info: {
+                    title: "agent-only-books",
+                    version: "0.1.0"
+                  },
+                  paths: {}
+                }, null, 2)}\n`
+              }
+            ],
+            manifest: {
+              createdFiles: ["openapi.json"],
+              updatedFiles: [],
+              validationCommands: ["cat openapi.json"]
+            },
+            rawOutput: "api"
           };
         }
 
