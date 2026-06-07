@@ -15,7 +15,9 @@ import {
   ProjectJobRunner,
   readSelectedModel,
   TelegramPollingRuntime,
+  TelegramWorkerRuntime,
   type ProjectBootstrapper,
+  type ProjectJobQueue,
   type TelegramApi
 } from "./index.js";
 
@@ -347,6 +349,103 @@ describe("TelegramPollingRuntime", () => {
     } finally {
       await rm(offsetRoot, { recursive: true, force: true });
     }
+  });
+
+  it("continues polling after a failed iteration", async () => {
+    let attempts = 0;
+    const errors: string[] = [];
+    const api: TelegramApi = {
+      async getUpdates() {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error("temporary Telegram outage");
+        }
+
+        return [];
+      },
+      async sendMessage() {},
+      async answerCallbackQuery() {}
+    };
+    const bot = new HephaestusTelegramBot({
+      models: parseAvailableModels("quality|Quality"),
+      sessionStore: new InMemoryTelegramSessionStore(),
+      jobQueue: new InMemoryProjectJobQueue()
+    });
+    const runtime = new TelegramPollingRuntime(api, bot);
+
+    await runtime.runForever(undefined, {
+      errorDelayMs: 1,
+      logger: {
+        error(message) {
+          errors.push(String(message));
+        }
+      },
+      async sleep() {},
+      shouldStop: () => attempts >= 2
+    });
+
+    expect(attempts).toBe(2);
+    expect(errors[0]).toContain("temporary Telegram outage");
+  });
+});
+
+describe("TelegramWorkerRuntime", () => {
+  it("continues worker loop after a failed iteration", async () => {
+    let attempts = 0;
+    const errors: string[] = [];
+    const queue: ProjectJobQueue = {
+      async enqueue() {
+        throw new Error("unused");
+      },
+      async listByChat() {
+        return [];
+      },
+      async claimNext() {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error("temporary queue outage");
+        }
+
+        return null;
+      },
+      async complete() {
+        throw new Error("unused");
+      },
+      async fail() {
+        throw new Error("unused");
+      }
+    };
+    const api: TelegramApi = {
+      async getUpdates() {
+        return [];
+      },
+      async sendMessage() {},
+      async answerCallbackQuery() {}
+    };
+    const runner = new ProjectJobRunner(
+      queue,
+      {
+        async bootstrap() {
+          throw new Error("unused");
+        }
+      },
+      api
+    );
+    const runtime = new TelegramWorkerRuntime(runner, 1);
+
+    await runtime.runForever({
+      errorDelayMs: 1,
+      logger: {
+        error(message) {
+          errors.push(String(message));
+        }
+      },
+      async sleep() {},
+      shouldStop: () => attempts >= 2
+    });
+
+    expect(attempts).toBe(2);
+    expect(errors[0]).toContain("temporary queue outage");
   });
 });
 

@@ -603,6 +603,13 @@ export interface TelegramHttpApiOptions {
   apiBaseUrl?: string;
 }
 
+export interface RuntimeLoopOptions {
+  errorDelayMs?: number;
+  logger?: Pick<Console, "error">;
+  sleep?: (timeoutMs: number) => Promise<void>;
+  shouldStop?: () => boolean;
+}
+
 export class TelegramHttpApi implements TelegramApi {
   private readonly baseUrl: string;
 
@@ -684,10 +691,15 @@ export class TelegramPollingRuntime {
     return nextOffset;
   }
 
-  async runForever(initialOffset?: number): Promise<never> {
+  async runForever(initialOffset?: number, options: RuntimeLoopOptions = {}): Promise<void> {
     let offset = initialOffset;
-    while (true) {
-      offset = await this.runOnce(offset);
+    while (!options.shouldStop?.()) {
+      try {
+        offset = await this.runOnce(offset);
+      } catch (error) {
+        logRuntimeError(options.logger, "Telegram polling iteration failed", error);
+        await delay(options.errorDelayMs ?? 3_000, options.sleep);
+      }
     }
   }
 }
@@ -768,14 +780,19 @@ export class TelegramWorkerRuntime {
     return this.runner.runNext();
   }
 
-  async runForever(): Promise<never> {
-    while (true) {
-      const job = await this.runOnce();
-      if (job) {
-        continue;
-      }
+  async runForever(options: RuntimeLoopOptions = {}): Promise<void> {
+    while (!options.shouldStop?.()) {
+      try {
+        const job = await this.runOnce();
+        if (job) {
+          continue;
+        }
 
-      await sleep(this.idleDelayMs);
+        await delay(this.idleDelayMs, options.sleep);
+      } catch (error) {
+        logRuntimeError(options.logger, "Telegram worker iteration failed", error);
+        await delay(options.errorDelayMs ?? this.idleDelayMs, options.sleep);
+      }
     }
   }
 }
@@ -962,6 +979,20 @@ function sleep(timeoutMs: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, timeoutMs);
   });
+}
+
+function delay(timeoutMs: number, customSleep?: (timeoutMs: number) => Promise<void>): Promise<void> {
+  return customSleep ? customSleep(timeoutMs) : sleep(timeoutMs);
+}
+
+function logRuntimeError(
+  logger: Pick<Console, "error"> | undefined,
+  message: string,
+  error: unknown
+): void {
+  const targetLogger = logger ?? console;
+  const details = error instanceof Error ? error.stack ?? error.message : String(error);
+  targetLogger.error(`${message}: ${details}`);
 }
 
 function recoverExpiredRunningJobs(jobs: ProjectJob[], now: Date): ProjectJob[] {
