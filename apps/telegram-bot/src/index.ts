@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { analyzeRequirements } from "@hephaestus/agents";
 import {
@@ -133,6 +134,7 @@ export interface ProjectJob {
   queuedAt: string;
   startedAt?: string;
   finishedAt?: string;
+  leaseExpiresAt?: string;
   projectDir?: string;
   projectName?: string;
   error?: string;
@@ -142,6 +144,7 @@ export interface ProjectJobQueue {
   enqueue(input: BootstrapProjectInput): Promise<ProjectJob>;
   listByChat(chatId: number): Promise<ProjectJob[]>;
   claimNext(): Promise<ProjectJob | null>;
+  renew?(jobId: string): Promise<ProjectJob>;
   complete(jobId: string, project: BootstrappedProject): Promise<ProjectJob>;
   fail(jobId: string, error: string): Promise<ProjectJob>;
 }
@@ -172,6 +175,7 @@ export class InMemoryProjectJobQueue implements ProjectJobQueue {
       ...this.jobs[index],
       status: "running" as const,
       startedAt: new Date().toISOString(),
+      leaseExpiresAt: undefined,
       error: undefined
     };
     this.jobs[index] = claimed;
@@ -209,14 +213,34 @@ export class InMemoryProjectJobQueue implements ProjectJobQueue {
 }
 
 export class FileProjectJobQueue implements ProjectJobQueue {
-  constructor(private readonly filePath: string) {}
+  private readonly lockTimeoutMs: number;
+  private readonly lockStaleMs: number;
+  private readonly jobLeaseMs: number;
+  private readonly now: () => Date;
+
+  constructor(
+    private readonly filePath: string,
+    options: {
+      lockTimeoutMs?: number;
+      lockStaleMs?: number;
+      jobLeaseMs?: number;
+      now?: () => Date;
+    } = {}
+  ) {
+    this.lockTimeoutMs = options.lockTimeoutMs ?? 5_000;
+    this.lockStaleMs = options.lockStaleMs ?? 300_000;
+    this.jobLeaseMs = options.jobLeaseMs ?? 600_000;
+    this.now = options.now ?? (() => new Date());
+  }
 
   async enqueue(input: BootstrapProjectInput): Promise<ProjectJob> {
-    const job = createProjectJob(input);
-    const jobs = await this.readAll();
-    jobs.push(job);
-    await this.writeAll(jobs);
-    return job;
+    return this.withLock(async () => {
+      const job = createProjectJob(input, this.now());
+      const jobs = await this.readAll();
+      jobs.push(job);
+      await this.writeAll(jobs);
+      return job;
+    });
   }
 
   async listByChat(chatId: number): Promise<ProjectJob[]> {
@@ -227,27 +251,55 @@ export class FileProjectJobQueue implements ProjectJobQueue {
   }
 
   async claimNext(): Promise<ProjectJob | null> {
-    const jobs = await this.readAll();
-    const index = jobs.findIndex((job) => job.status === "pending");
-    if (index === -1) {
-      return null;
-    }
+    return this.withLock(async () => {
+      const jobs = recoverExpiredRunningJobs(await this.readAll(), this.now());
+      const index = jobs.findIndex((job) => job.status === "pending");
+      if (index === -1) {
+        await this.writeAll(jobs);
+        return null;
+      }
 
-    const claimed = {
-      ...jobs[index],
-      status: "running" as const,
-      startedAt: new Date().toISOString(),
-      error: undefined
-    };
-    jobs[index] = claimed;
-    await this.writeAll(jobs);
-    return claimed;
+      const claimed = {
+        ...jobs[index],
+        status: "running" as const,
+        startedAt: this.now().toISOString(),
+        leaseExpiresAt: leaseDeadline(this.now(), this.jobLeaseMs).toISOString(),
+        error: undefined
+      };
+      jobs[index] = claimed;
+      await this.writeAll(jobs);
+      return claimed;
+    });
+  }
+
+  async renew(jobId: string): Promise<ProjectJob> {
+    return this.withLock(async () => {
+      const jobs = await this.readAll();
+      const index = jobs.findIndex((job) => job.id === jobId);
+      if (index === -1) {
+        throw new Error(`Unknown project job: ${jobId}`);
+      }
+
+      const current = jobs[index];
+      if (current.status !== "running") {
+        return current;
+      }
+
+      const updated = {
+        ...current,
+        leaseExpiresAt: leaseDeadline(this.now(), this.jobLeaseMs).toISOString()
+      };
+      jobs[index] = updated;
+      await this.writeAll(jobs);
+      return updated;
+    });
   }
 
   async complete(jobId: string, project: BootstrappedProject): Promise<ProjectJob> {
     return this.update(jobId, {
       status: "completed",
-      finishedAt: new Date().toISOString(),
+      finishedAt: this.now().toISOString(),
+      leaseExpiresAt: undefined,
       projectDir: project.projectDir,
       projectName: project.projectName,
       error: undefined
@@ -257,22 +309,25 @@ export class FileProjectJobQueue implements ProjectJobQueue {
   async fail(jobId: string, error: string): Promise<ProjectJob> {
     return this.update(jobId, {
       status: "failed",
-      finishedAt: new Date().toISOString(),
+      finishedAt: this.now().toISOString(),
+      leaseExpiresAt: undefined,
       error
     });
   }
 
   private async update(jobId: string, patch: Partial<ProjectJob>): Promise<ProjectJob> {
-    const jobs = await this.readAll();
-    const index = jobs.findIndex((job) => job.id === jobId);
-    if (index === -1) {
-      throw new Error(`Unknown project job: ${jobId}`);
-    }
+    return this.withLock(async () => {
+      const jobs = await this.readAll();
+      const index = jobs.findIndex((job) => job.id === jobId);
+      if (index === -1) {
+        throw new Error(`Unknown project job: ${jobId}`);
+      }
 
-    const updated = { ...jobs[index], ...patch };
-    jobs[index] = updated;
-    await this.writeAll(jobs);
-    return updated;
+      const updated = { ...jobs[index], ...patch };
+      jobs[index] = updated;
+      await this.writeAll(jobs);
+      return updated;
+    });
   }
 
   private async readAll(): Promise<ProjectJob[]> {
@@ -281,6 +336,21 @@ export class FileProjectJobQueue implements ProjectJobQueue {
 
   private async writeAll(jobs: ProjectJob[]): Promise<void> {
     await writeJsonFile(this.filePath, jobs);
+  }
+
+  private async withLock<T>(operation: () => Promise<T>): Promise<T> {
+    await mkdir(dirname(this.filePath), { recursive: true });
+    const release = await acquireFileLock(`${this.filePath}.lock`, {
+      timeoutMs: this.lockTimeoutMs,
+      staleMs: this.lockStaleMs,
+      now: this.now
+    });
+
+    try {
+      return await operation();
+    } finally {
+      await release();
+    }
   }
 }
 
@@ -626,7 +696,8 @@ export class ProjectJobRunner {
   constructor(
     private readonly queue: ProjectJobQueue,
     private readonly bootstrapper: ProjectBootstrapper,
-    private readonly api: TelegramApi
+    private readonly api: TelegramApi,
+    private readonly options: { leaseRenewIntervalMs?: number } = {}
   ) {}
 
   async runNext(): Promise<ProjectJob | null> {
@@ -635,14 +706,20 @@ export class ProjectJobRunner {
       return null;
     }
 
-    await this.api.sendMessage(
-      sendMessage(
-        job.chatId,
-        [`Запущена генерация проекта: ${job.id}`, `Модель: ${job.selectedModel.label}`].join("\n")
-      )
+    const stopRenewal = startJobLeaseRenewal(
+      this.queue,
+      job.id,
+      this.options.leaseRenewIntervalMs ?? 60_000
     );
 
     try {
+      await this.api.sendMessage(
+        sendMessage(
+          job.chatId,
+          [`Запущена генерация проекта: ${job.id}`, `Модель: ${job.selectedModel.label}`].join("\n")
+        )
+      );
+
       const project = await this.bootstrapper.bootstrap({
         chatId: job.chatId,
         description: job.description,
@@ -675,6 +752,8 @@ export class ProjectJobRunner {
       );
 
       return failedJob;
+    } finally {
+      stopRenewal();
     }
   }
 }
@@ -811,8 +890,8 @@ async function parseTelegramResponse(response: Response): Promise<{ ok: boolean;
   return payload;
 }
 
-function createProjectJob(input: BootstrapProjectInput): ProjectJob {
-  const now = new Date().toISOString();
+function createProjectJob(input: BootstrapProjectInput, date = new Date()): ProjectJob {
+  const now = date.toISOString();
   return {
     id: `job-${now.replaceAll(/[:.]/g, "").replace("T", "-").replace("Z", "")}`,
     chatId: input.chatId,
@@ -874,11 +953,112 @@ async function readJsonFile<T>(path: string, fallback: T): Promise<T> {
 
 async function writeJsonFile(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  await writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await rename(temporaryPath, path);
 }
 
 function sleep(timeoutMs: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, timeoutMs);
   });
+}
+
+function recoverExpiredRunningJobs(jobs: ProjectJob[], now: Date): ProjectJob[] {
+  return jobs.map((job) => {
+    if (job.status !== "running" || !job.leaseExpiresAt) {
+      return job;
+    }
+
+    if (Date.parse(job.leaseExpiresAt) > now.getTime()) {
+      return job;
+    }
+
+    return {
+      ...job,
+      status: "pending",
+      leaseExpiresAt: undefined
+    };
+  });
+}
+
+function leaseDeadline(now: Date, leaseMs: number): Date {
+  return new Date(now.getTime() + leaseMs);
+}
+
+function startJobLeaseRenewal(
+  queue: ProjectJobQueue,
+  jobId: string,
+  intervalMs: number
+): () => void {
+  if (!queue.renew) {
+    return () => {};
+  }
+
+  const timer = setInterval(() => {
+    queue.renew?.(jobId).catch(() => {});
+  }, intervalMs);
+
+  return () => {
+    clearInterval(timer);
+  };
+}
+
+async function acquireFileLock(
+  lockPath: string,
+  options: {
+    timeoutMs: number;
+    staleMs: number;
+    now: () => Date;
+  }
+): Promise<() => Promise<void>> {
+  const deadline = options.now().getTime() + options.timeoutMs;
+
+  while (true) {
+    try {
+      const handle = await open(lockPath, "wx");
+      await handle.close();
+      return async () => {
+        await rm(lockPath, { force: true });
+      };
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== "EEXIST") {
+        throw error;
+      }
+
+      await removeStaleLock(lockPath, options);
+
+      if (options.now().getTime() >= deadline) {
+        throw new Error(`Timed out waiting for queue lock: ${lockPath}`);
+      }
+
+      await sleep(50);
+    }
+  }
+}
+
+async function removeStaleLock(
+  lockPath: string,
+  options: {
+    staleMs: number;
+    now: () => Date;
+  }
+): Promise<void> {
+  try {
+    const metadata = await stat(lockPath);
+    if (options.now().getTime() - metadata.mtimeMs < options.staleMs) {
+      return;
+    }
+
+    await rm(lockPath, { force: true });
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
 }

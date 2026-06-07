@@ -180,6 +180,71 @@ describe("persistent Telegram bot state", () => {
       await rm(rootDir, { recursive: true, force: true });
     }
   });
+
+  it("recovers expired running jobs from the file queue", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "hephaestus-telegram-state-"));
+    let currentTime = new Date("2026-01-01T00:00:00.000Z");
+
+    try {
+      const filePath = join(rootDir, "jobs.json");
+      const queue = new FileProjectJobQueue(filePath, {
+        jobLeaseMs: 1_000,
+        now: () => currentTime
+      });
+      const job = await queue.enqueue({
+        chatId: 100,
+        description: "Создай сервис книг",
+        selectedModel: { id: "quality", label: "Quality" }
+      });
+      const claimed = await queue.claimNext();
+
+      expect(claimed).toMatchObject({
+        id: job.id,
+        status: "running",
+        leaseExpiresAt: "2026-01-01T00:00:01.000Z"
+      });
+
+      currentTime = new Date("2026-01-01T00:00:02.000Z");
+
+      const reloadedQueue = new FileProjectJobQueue(filePath, {
+        jobLeaseMs: 1_000,
+        now: () => currentTime
+      });
+      const recovered = await reloadedQueue.claimNext();
+
+      expect(recovered).toMatchObject({
+        id: job.id,
+        status: "running",
+        startedAt: "2026-01-01T00:00:02.000Z",
+        leaseExpiresAt: "2026-01-01T00:00:03.000Z"
+      });
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("serializes concurrent file queue claims", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "hephaestus-telegram-state-"));
+
+    try {
+      const filePath = join(rootDir, "jobs.json");
+      const queue = new FileProjectJobQueue(filePath);
+      await queue.enqueue({
+        chatId: 100,
+        description: "Создай сервис книг",
+        selectedModel: { id: "quality", label: "Quality" }
+      });
+
+      const [leftClaim, rightClaim] = await Promise.all([
+        new FileProjectJobQueue(filePath).claimNext(),
+        new FileProjectJobQueue(filePath).claimNext()
+      ]);
+
+      expect([leftClaim, rightClaim].filter(Boolean)).toHaveLength(1);
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("ProjectJobRunner", () => {
