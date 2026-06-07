@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -746,6 +746,109 @@ describe("Orchestrator", () => {
       await expect(readFile(join(projectDir, "backend/internal/http/router.go"), "utf8")).rejects.toThrow();
       await expect(readFile(join(projectDir, "AGENT_RUNS.jsonl"), "utf8")).resolves.toContain("\"role\":\"integrator\"");
       await expect(readFile(join(projectDir, "AGENT_MANIFESTS.jsonl"), "utf8")).resolves.toContain("docker-compose.yml");
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("retries no-scaffold agent stages before failing the bootstrap", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
+    let databaseAttempts = 0;
+    const provider: ModelProvider = {
+      async generate(input) {
+        databaseAttempts += 1;
+        expect(input.role).toBe("database");
+
+        if (databaseAttempts === 1) {
+          return {
+            role: input.role,
+            summary: "Missing manifest",
+            changedFiles: ["backend/migrations/0001_generated_schema.sql"],
+            updatedFiles: [
+              {
+                path: "backend/migrations/0001_generated_schema.sql",
+                content: "CREATE TABLE books (id text primary key);\n"
+              }
+            ],
+            rawOutput: "database"
+          };
+        }
+
+        return {
+          role: input.role,
+          summary: "Created database files",
+          changedFiles: ["backend/migrations/0001_generated_schema.sql"],
+          updatedFiles: [
+            {
+              path: "backend/migrations/0001_generated_schema.sql",
+              content: "CREATE TABLE books (id text primary key);\n"
+            }
+          ],
+          manifest: {
+            createdFiles: ["backend/migrations/0001_generated_schema.sql"],
+            updatedFiles: [],
+            validationCommands: ["cd backend && go test ./..."]
+          },
+          rawOutput: "database"
+        };
+      }
+    };
+
+    try {
+      const orchestrator = new Orchestrator(new FileProjectStateStore(), provider);
+
+      await orchestrator.initializeProject(projectDir, {
+        projectName: "agent-only-books",
+        description: "Agent-only generated project",
+        actors: [{ name: "user" }],
+        features: [
+          {
+            id: "books-crud",
+            title: "Manage books",
+            description: "Manage books",
+            priority: "must"
+          }
+        ],
+        entities: [{ name: "Book", fields: ["title"] }],
+        requiresAuth: true,
+        requiresDatabase: true,
+        constraints: [],
+        acceptanceCriteria: ["Books can be listed"]
+      });
+      await orchestrator.approveSpec(projectDir, {
+        projectName: "agent-only-books",
+        stack: {
+          frontend: "react-vite-typescript",
+          backend: "go-chi",
+          database: "postgresql",
+          api: "rest-openapi"
+        },
+        backendModules: ["books"],
+        frontendRoutes: ["/"],
+        databaseEntities: [{ name: "Book", fields: ["title"] }],
+        endpoints: [
+          {
+            method: "GET",
+            path: "/api/books",
+            summary: "List books",
+            authRequired: true
+          }
+        ],
+        validationCommands: ["docker compose config"]
+      });
+      await writeFile(join(projectDir, "REQUEST.md"), "Создай сервис книг.\n", "utf8");
+      await writeFile(join(projectDir, "openapi.json"), "{}\n", "utf8");
+
+      await orchestrator.generateDatabaseStage(projectDir, {
+        noScaffold: true,
+        maxStageAttempts: 2
+      });
+
+      expect(databaseAttempts).toBe(2);
+      await expect(readFile(join(projectDir, "backend/migrations/0001_generated_schema.sql"), "utf8")).resolves.toContain(
+        "CREATE TABLE books"
+      );
+      await expect(readFile(join(projectDir, "AGENT_STAGE_RETRIES.jsonl"), "utf8")).resolves.toContain("\"status\":\"recovered\"");
     } finally {
       await rm(projectDir, { recursive: true, force: true });
     }

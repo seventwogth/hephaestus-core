@@ -63,6 +63,11 @@ export interface AgentStageInput {
   requireManifest?: boolean;
 }
 
+interface AgentGenerationStageOptions {
+  noScaffold?: boolean;
+  maxStageAttempts?: number;
+}
+
 export interface ValidateProjectStageOptions {
   checks?: ValidationCheck[];
   timeoutMs?: number;
@@ -76,6 +81,7 @@ export interface FixProjectStageOptions extends ValidateProjectStageOptions {
 
 export interface BootstrapProjectOptions extends FixProjectStageOptions {
   noScaffold?: boolean;
+  maxStageAttempts?: number;
   runIntegration?: boolean;
   runValidation?: boolean;
   autoFix?: boolean;
@@ -157,12 +163,17 @@ export class Orchestrator {
     }
 
     await this.planProject(projectDir);
-    await this.generateApiContractStage(projectDir, { noScaffold: options.noScaffold ?? false });
-    await this.generateDatabaseStage(projectDir, { noScaffold: options.noScaffold ?? false });
-    await this.generateBackendStage(projectDir, { noScaffold: options.noScaffold ?? false });
-    await this.generateFrontendStage(projectDir, { noScaffold: options.noScaffold ?? false });
+    const generationOptions = {
+      noScaffold: options.noScaffold ?? false,
+      maxStageAttempts: options.maxStageAttempts
+    };
+
+    await this.generateApiContractStage(projectDir, generationOptions);
+    await this.generateDatabaseStage(projectDir, generationOptions);
+    await this.generateBackendStage(projectDir, generationOptions);
+    await this.generateFrontendStage(projectDir, generationOptions);
     if (options.runIntegration ?? true) {
-      await this.integrateProjectStage(projectDir, { noScaffold: options.noScaffold ?? false });
+      await this.integrateProjectStage(projectDir, generationOptions);
     }
 
     let validationReport: ValidationReport | undefined;
@@ -232,7 +243,7 @@ export class Orchestrator {
 
   async generateApiContractStage(
     projectDir: string,
-    options: { noScaffold?: boolean } = {}
+    options: AgentGenerationStageOptions = {}
   ): Promise<void> {
     const plan = await this.store.readPlan(projectDir);
     const spec = await this.store.readSpec(projectDir);
@@ -244,14 +255,14 @@ export class Orchestrator {
     await this.updateTaskStatus(projectDir, "api", "in_progress");
 
     if (this.modelProvider && options.noScaffold) {
-      await this.runAgentStage(projectDir, {
+      await this.runAgentGenerationStage(projectDir, {
         role: "api",
         instruction: buildOpenApiInstruction(plan),
         contextFiles: ["REQUEST.md", "SPEC.json", "PLAN.json"],
         writableFiles: ["openapi.json", "README.md"],
         validationCommand: "cat openapi.json",
         requireManifest: true
-      });
+      }, options);
     } else {
       await writeFile(join(projectDir, "openapi.json"), `${JSON.stringify(renderOpenApiDocument(spec, plan), null, 2)}\n`, "utf8");
     }
@@ -261,7 +272,7 @@ export class Orchestrator {
 
   async generateBackendStage(
     projectDir: string,
-    options: { noScaffold?: boolean } = {}
+    options: AgentGenerationStageOptions = {}
   ): Promise<void> {
     const plan = await this.store.readPlan(projectDir);
     if (!plan) {
@@ -272,7 +283,7 @@ export class Orchestrator {
     await this.updateTaskStatus(projectDir, "backend", "in_progress");
 
     if (this.modelProvider) {
-      await this.runAgentStage(projectDir, {
+      await this.runAgentGenerationStage(projectDir, {
         role: "backend",
         instruction: buildBackendInstruction(plan, options),
         contextFiles: options.noScaffold
@@ -295,7 +306,7 @@ export class Orchestrator {
           : ["backend", "docker-compose.yml", "README.md"],
         validationCommand: "cd backend && go test ./...",
         requireManifest: options.noScaffold
-      });
+      }, options);
     } else {
       await generateGoBackend({ projectDir, plan });
     }
@@ -305,7 +316,7 @@ export class Orchestrator {
 
   async generateDatabaseStage(
     projectDir: string,
-    options: { noScaffold?: boolean } = {}
+    options: AgentGenerationStageOptions = {}
   ): Promise<void> {
     const plan = await this.store.readPlan(projectDir);
     if (!plan) {
@@ -316,7 +327,7 @@ export class Orchestrator {
     await this.updateTaskStatus(projectDir, "database", "in_progress");
 
     if (this.modelProvider) {
-      await this.runAgentStage(projectDir, {
+      await this.runAgentGenerationStage(projectDir, {
         role: "database",
         instruction: buildDatabaseInstruction(plan, options),
         contextFiles: options.noScaffold
@@ -336,7 +347,7 @@ export class Orchestrator {
           : ["backend", "docker-compose.yml", "README.md"],
         validationCommand: "cd backend && go test ./...",
         requireManifest: options.noScaffold
-      });
+      }, options);
     } else {
       await generateDatabaseArtifacts({ projectDir, plan });
     }
@@ -346,7 +357,7 @@ export class Orchestrator {
 
   async generateFrontendStage(
     projectDir: string,
-    options: { noScaffold?: boolean } = {}
+    options: AgentGenerationStageOptions = {}
   ): Promise<void> {
     const plan = await this.store.readPlan(projectDir);
     if (!plan) {
@@ -357,7 +368,7 @@ export class Orchestrator {
     await this.updateTaskStatus(projectDir, "frontend", "in_progress");
 
     if (this.modelProvider) {
-      await this.runAgentStage(projectDir, {
+      await this.runAgentGenerationStage(projectDir, {
         role: "frontend",
         instruction: buildFrontendInstruction(plan, options),
         contextFiles: options.noScaffold
@@ -377,7 +388,7 @@ export class Orchestrator {
           : ["frontend", "README.md"],
         validationCommand: "cd frontend && npm run build",
         requireManifest: options.noScaffold
-      });
+      }, options);
     } else {
       await generateReactFrontend({ projectDir, plan });
     }
@@ -387,7 +398,7 @@ export class Orchestrator {
 
   async integrateProjectStage(
     projectDir: string,
-    options: { noScaffold?: boolean } = {}
+    options: AgentGenerationStageOptions = {}
   ): Promise<void> {
     const plan = await this.store.readPlan(projectDir);
     const spec = await this.store.readSpec(projectDir);
@@ -399,7 +410,7 @@ export class Orchestrator {
     await this.updateTaskStatus(projectDir, "integration", "in_progress");
 
     if (this.modelProvider) {
-      await this.runAgentStage(projectDir, {
+      await this.runAgentGenerationStage(projectDir, {
         role: "integrator",
         instruction: buildIntegrationInstruction(plan, options),
         contextFiles: options.noScaffold
@@ -433,7 +444,7 @@ export class Orchestrator {
           : ["backend", "frontend", "docker-compose.yml", "README.md"],
         validationCommand: "docker compose config",
         requireManifest: options.noScaffold
-      });
+      }, options);
     }
 
     await this.updateTaskStatus(projectDir, "integration", "done");
@@ -524,6 +535,55 @@ export class Orchestrator {
     }
 
     return result;
+  }
+
+  private async runAgentGenerationStage(
+    projectDir: string,
+    input: AgentStageInput,
+    options: AgentGenerationStageOptions = {}
+  ): Promise<AgentRunResult> {
+    const maxAttempts = Math.max(1, options.noScaffold ? options.maxStageAttempts ?? 2 : 1);
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const result = await this.runAgentStage(projectDir, {
+          ...input,
+          instruction: attempt === 1
+            ? input.instruction
+            : `${input.instruction}\n\nPrevious attempt ${attempt - 1} failed before artifacts were accepted. Regenerate the stage, include a complete manifest, and stay within writableFiles.`
+        });
+
+        if (attempt > 1) {
+          await appendFile(
+            join(projectDir, "AGENT_STAGE_RETRIES.jsonl"),
+            `${JSON.stringify({ at: new Date().toISOString(), role: input.role, attempt, status: "recovered" })}\n`,
+            "utf8"
+          );
+        }
+
+        return result;
+      } catch (error) {
+        lastError = error;
+        await appendFile(
+          join(projectDir, "AGENT_STAGE_RETRIES.jsonl"),
+          `${JSON.stringify({
+            at: new Date().toISOString(),
+            role: input.role,
+            attempt,
+            status: attempt === maxAttempts ? "failed" : "retrying",
+            error: error instanceof Error ? error.message : String(error)
+          })}\n`,
+          "utf8"
+        );
+
+        if (attempt === maxAttempts) {
+          throw error;
+        }
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 
   async validateProjectStage(
