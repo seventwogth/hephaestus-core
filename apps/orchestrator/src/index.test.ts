@@ -746,6 +746,8 @@ describe("Orchestrator", () => {
       await expect(readFile(join(projectDir, "backend/internal/http/router.go"), "utf8")).rejects.toThrow();
       await expect(readFile(join(projectDir, "AGENT_RUNS.jsonl"), "utf8")).resolves.toContain("\"role\":\"integrator\"");
       await expect(readFile(join(projectDir, "AGENT_MANIFESTS.jsonl"), "utf8")).resolves.toContain("docker-compose.yml");
+      await expect(readFile(join(projectDir, "GENERATION_REPORT.json"), "utf8")).resolves.toContain("\"scaffoldMode\": \"no-scaffold\"");
+      await expect(readFile(join(projectDir, "GENERATION_REPORT.json"), "utf8")).resolves.toContain("frontend/src/main.tsx");
     } finally {
       await rm(projectDir, { recursive: true, force: true });
     }

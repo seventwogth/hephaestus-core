@@ -115,6 +115,24 @@ export interface ArtifactCompletenessOptions {
   includeIntegration?: boolean;
 }
 
+export interface GenerationReport {
+  generatedAt: string;
+  scaffoldMode: "no-scaffold" | "template";
+  deterministicScaffoldUsed: boolean;
+  agentRunCount: number;
+  manifestCount: number;
+  agentRoles: string[];
+  manifestRoles: string[];
+  agentAuthoredFiles: string[];
+  agentAuthoredFileCount: number;
+  manifestCoverage: {
+    filesDeclaredByRuns: number;
+    filesDeclaredByManifests: number;
+    coveredFiles: string[];
+    missingFromManifest: string[];
+  };
+}
+
 export class FileProjectStateStore implements ProjectStateStore {
   async readSpec(projectDir: string): Promise<ProjectSpec | null> {
     return readJson(join(projectDir, "SPEC.json"), projectSpecSchema);
@@ -214,6 +232,10 @@ export class Orchestrator {
     if ((options.runDocumentation ?? true) && (validationReport?.passed ?? true)) {
       await this.documentProjectStage(projectDir);
     }
+
+    await this.writeGenerationReport(projectDir, {
+      noScaffold: options.noScaffold ?? false
+    });
 
     return {
       spec,
@@ -605,6 +627,40 @@ export class Orchestrator {
       const failedIds = report.checks.filter((check) => !check.passed).map((check) => check.id);
       throw new Error(`No-scaffold artifact completeness failed: ${failedIds.join(", ")}`);
     }
+
+    return report;
+  }
+
+  async writeGenerationReport(
+    projectDir: string,
+    options: { noScaffold?: boolean } = {}
+  ): Promise<GenerationReport> {
+    const runRecords = await readJsonLines(join(projectDir, "AGENT_RUNS.jsonl"));
+    const manifestRecords = await readJsonLines(join(projectDir, "AGENT_MANIFESTS.jsonl"));
+    const filesDeclaredByRuns = collectAgentRunFiles(runRecords);
+    const filesDeclaredByManifests = collectManifestFiles(manifestRecords);
+    const agentAuthoredFiles = new Set([...filesDeclaredByManifests, ...filesDeclaredByRuns]);
+    const coveredFiles = [...filesDeclaredByRuns].filter((path) => filesDeclaredByManifests.has(path)).sort();
+    const missingFromManifest = [...filesDeclaredByRuns].filter((path) => !filesDeclaredByManifests.has(path)).sort();
+    const report: GenerationReport = {
+      generatedAt: new Date().toISOString(),
+      scaffoldMode: options.noScaffold ? "no-scaffold" : "template",
+      deterministicScaffoldUsed: !options.noScaffold,
+      agentRunCount: runRecords.length,
+      manifestCount: manifestRecords.length,
+      agentRoles: collectRecordRoles(runRecords, "result"),
+      manifestRoles: collectRecordRoles(manifestRecords),
+      agentAuthoredFiles: [...agentAuthoredFiles].sort(),
+      agentAuthoredFileCount: agentAuthoredFiles.size,
+      manifestCoverage: {
+        filesDeclaredByRuns: filesDeclaredByRuns.size,
+        filesDeclaredByManifests: filesDeclaredByManifests.size,
+        coveredFiles,
+        missingFromManifest
+      }
+    };
+
+    await writeJson(join(projectDir, "GENERATION_REPORT.json"), report);
 
     return report;
   }
@@ -1022,9 +1078,105 @@ async function readJson<T>(path: string, schema: { parse(value: unknown): T }): 
   }
 }
 
+async function readJsonLines(path: string): Promise<unknown[]> {
+  try {
+    const raw = await readFile(path, "utf8");
+    return raw
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as unknown);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+}
+
 async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function collectAgentRunFiles(records: unknown[]): Set<string> {
+  const files = new Set<string>();
+  for (const record of records) {
+    const result = getObjectProperty(record, "result");
+    for (const path of getStringArrayProperty(result, "changedFiles")) {
+      files.add(path);
+    }
+
+    for (const file of getArrayProperty(result, "updatedFiles")) {
+      const path = getStringProperty(file, "path");
+      if (path) {
+        files.add(path);
+      }
+    }
+  }
+
+  return files;
+}
+
+function collectManifestFiles(records: unknown[]): Set<string> {
+  const files = new Set<string>();
+  for (const record of records) {
+    const manifest = getObjectProperty(record, "manifest");
+    for (const path of getStringArrayProperty(manifest, "createdFiles")) {
+      files.add(path);
+    }
+    for (const path of getStringArrayProperty(manifest, "updatedFiles")) {
+      files.add(path);
+    }
+  }
+
+  return files;
+}
+
+function collectRecordRoles(records: unknown[], nestedProperty?: string): string[] {
+  const roles = new Set<string>();
+  for (const record of records) {
+    const source = nestedProperty ? getObjectProperty(record, nestedProperty) : record;
+    const role = getStringProperty(source, "role");
+    if (role) {
+      roles.add(role);
+    }
+  }
+
+  return [...roles].sort();
+}
+
+function getObjectProperty(value: unknown, property: string): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const propertyValue = (value as Record<string, unknown>)[property];
+  return propertyValue && typeof propertyValue === "object" && !Array.isArray(propertyValue)
+    ? propertyValue as Record<string, unknown>
+    : undefined;
+}
+
+function getArrayProperty(value: unknown, property: string): unknown[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return [];
+  }
+
+  const propertyValue = (value as Record<string, unknown>)[property];
+  return Array.isArray(propertyValue) ? propertyValue : [];
+}
+
+function getStringArrayProperty(value: unknown, property: string): string[] {
+  return getArrayProperty(value, property).filter((item): item is string => typeof item === "string");
+}
+
+function getStringProperty(value: unknown, property: string): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const propertyValue = (value as Record<string, unknown>)[property];
+  return typeof propertyValue === "string" ? propertyValue : undefined;
 }
 
 function buildRequirementsInstruction(): string {
