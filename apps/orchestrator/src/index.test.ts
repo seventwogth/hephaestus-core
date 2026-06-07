@@ -173,6 +173,62 @@ describe("Orchestrator", () => {
     }
   });
 
+  it("rejects model file updates that escape an allowed writable subtree", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
+    const provider: ModelProvider = {
+      async generate(input) {
+        return {
+          role: input.role,
+          summary: "Attempted path traversal",
+          changedFiles: ["frontend/../STATUS.json"],
+          updatedFiles: [
+            {
+              path: "frontend/../STATUS.json",
+              content: "malicious\n"
+            }
+          ],
+          rawOutput: "ok"
+        };
+      }
+    };
+
+    try {
+      const orchestrator = new Orchestrator(new FileProjectStateStore(), provider);
+
+      await orchestrator.initializeProject(projectDir, {
+        projectName: "book-tracker",
+        description: "Track personal books",
+        actors: [{ name: "user" }],
+        features: [
+          {
+            id: "books-crud",
+            title: "Manage books",
+            description: "Create, update, and delete books",
+            priority: "must"
+          }
+        ],
+        entities: [],
+        requiresAuth: true,
+        requiresDatabase: true,
+        constraints: [],
+        acceptanceCriteria: ["User can manage only their own books"]
+      });
+
+      await expect(
+        orchestrator.runAgentStage(projectDir, {
+          role: "frontend",
+          instruction: "Update frontend",
+          contextFiles: [],
+          writableFiles: ["frontend"]
+        })
+      ).rejects.toThrow("outside allowed files");
+
+      await expect(readFile(join(projectDir, "STATUS.json"), "utf8")).resolves.not.toBe("malicious\n");
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it("creates architecture plan from stored spec", async () => {
     const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
 

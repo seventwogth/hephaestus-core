@@ -399,8 +399,11 @@ export class Orchestrator {
       validationCommand: input.validationCommand
     });
 
+    const writableTargets = input.writableFiles.map((path) => sandbox.resolveInsideRoot(path));
+
     for (const file of result.updatedFiles ?? []) {
-      if (!isWritablePath(file.path, input.writableFiles)) {
+      const targetPath = sandbox.resolveInsideRoot(file.path);
+      if (!isWritablePath(targetPath, writableTargets)) {
         throw new Error(`Model provider attempted to write outside allowed files: ${file.path}`);
       }
 
