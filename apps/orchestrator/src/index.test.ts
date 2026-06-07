@@ -557,6 +557,12 @@ describe("Orchestrator", () => {
                 content: "CREATE TABLE IF NOT EXISTS books (id uuid primary key, title text not null);\n"
               }
             ],
+            manifest: {
+              createdFiles: ["backend/migrations/0001_generated_schema.sql"],
+              updatedFiles: [],
+              validationCommands: ["cd backend && go test ./..."],
+              notes: ["Created database migration from scratch"]
+            },
             rawOutput: "database"
           };
         }
@@ -577,6 +583,12 @@ describe("Orchestrator", () => {
                 content: "package main\n\nfunc main() {}\n"
               }
             ],
+            manifest: {
+              createdFiles: ["backend/go.mod", "backend/cmd/api/main.go"],
+              updatedFiles: [],
+              validationCommands: ["cd backend && go test ./..."],
+              notes: ["Created minimal Go backend from scratch"]
+            },
             rawOutput: "backend"
           };
         }
@@ -597,6 +609,12 @@ describe("Orchestrator", () => {
                 content: 'console.log("agent-only-books")\n'
               }
             ],
+            manifest: {
+              createdFiles: ["frontend/package.json", "frontend/src/main.tsx"],
+              updatedFiles: [],
+              validationCommands: ["cd frontend && npm run build"],
+              notes: ["Created minimal frontend from scratch"]
+            },
             rawOutput: "frontend"
           };
         }
@@ -617,6 +635,12 @@ describe("Orchestrator", () => {
                 content: "DATABASE_URL=postgres://postgres:postgres@db:5432/app\n"
               }
             ],
+            manifest: {
+              createdFiles: ["docker-compose.yml", ".env.example"],
+              updatedFiles: [],
+              validationCommands: ["docker compose config"],
+              notes: ["Created integration files from scratch"]
+            },
             rawOutput: "integration"
           };
         }
@@ -639,6 +663,107 @@ describe("Orchestrator", () => {
       await expect(readFile(join(projectDir, "docker-compose.yml"), "utf8")).resolves.toContain("build: ./backend");
       await expect(readFile(join(projectDir, "backend/internal/http/router.go"), "utf8")).rejects.toThrow();
       await expect(readFile(join(projectDir, "AGENT_RUNS.jsonl"), "utf8")).resolves.toContain("\"role\":\"integrator\"");
+      await expect(readFile(join(projectDir, "AGENT_MANIFESTS.jsonl"), "utf8")).resolves.toContain("docker-compose.yml");
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects no-scaffold app stages without an agent manifest", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
+    const provider: ModelProvider = {
+      async generate(input) {
+        if (input.role === "database") {
+          return {
+            role: input.role,
+            summary: "Missing manifest",
+            changedFiles: ["backend/migrations/0001_generated_schema.sql"],
+            updatedFiles: [
+              {
+                path: "backend/migrations/0001_generated_schema.sql",
+                content: "CREATE TABLE books (id text primary key);\n"
+              }
+            ],
+            rawOutput: "database"
+          };
+        }
+
+        if (input.role === "architect") {
+          return {
+            role: input.role,
+            summary: "Created PLAN",
+            changedFiles: ["PLAN.json"],
+            updatedFiles: [
+              {
+                path: "PLAN.json",
+                content: `${JSON.stringify({
+                  projectName: "agent-only-books",
+                  stack: {
+                    frontend: "react-vite-typescript",
+                    backend: "go-chi",
+                    database: "postgresql",
+                    api: "rest-openapi"
+                  },
+                  backendModules: ["books"],
+                  frontendRoutes: ["/"],
+                  databaseEntities: [{ name: "Book", fields: ["title"] }],
+                  endpoints: [
+                    {
+                      method: "GET",
+                      path: "/api/books",
+                      summary: "List books",
+                      authRequired: true
+                    }
+                  ],
+                  validationCommands: ["docker compose config"]
+                }, null, 2)}\n`
+              }
+            ],
+            rawOutput: "plan"
+          };
+        }
+
+        return {
+          role: input.role,
+          summary: "Created SPEC",
+          changedFiles: ["SPEC.json"],
+          updatedFiles: [
+            {
+              path: "SPEC.json",
+              content: `${JSON.stringify({
+                projectName: "agent-only-books",
+                description: "Agent-only generated project",
+                actors: [{ name: "user" }],
+                features: [
+                  {
+                    id: "books-crud",
+                    title: "Manage books",
+                    description: "Manage books",
+                    priority: "must"
+                  }
+                ],
+                entities: [{ name: "Book", fields: ["title"] }],
+                requiresAuth: true,
+                requiresDatabase: true,
+                constraints: [],
+                acceptanceCriteria: ["Books can be listed"]
+              }, null, 2)}\n`
+            }
+          ],
+          rawOutput: "spec"
+        };
+      }
+    };
+
+    try {
+      const orchestrator = new Orchestrator(new FileProjectStateStore(), provider);
+
+      await expect(
+        orchestrator.bootstrapProjectFromPrompt(projectDir, "Создай сервис книг.", {
+          noScaffold: true,
+          runValidation: false
+        })
+      ).rejects.toThrow("required manifest");
     } finally {
       await rm(projectDir, { recursive: true, force: true });
     }

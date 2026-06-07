@@ -24,11 +24,19 @@ export interface AgentRunInput {
   validationCommand?: string;
 }
 
+export interface AgentRunManifest {
+  createdFiles: string[];
+  updatedFiles: string[];
+  validationCommands: string[];
+  notes?: string[];
+}
+
 export interface AgentRunResult {
   role: AgentRole;
   summary: string;
   changedFiles: string[];
   updatedFiles: AgentFileContext[];
+  manifest?: AgentRunManifest;
   rawOutput: string;
 }
 
@@ -70,6 +78,12 @@ export class StubModelProvider implements ModelProvider {
       summary: `Stubbed ${input.role} run`,
       changedFiles: [],
       updatedFiles: [],
+      manifest: {
+        createdFiles: [],
+        updatedFiles: [],
+        validationCommands: input.validationCommand ? [input.validationCommand] : [],
+        notes: ["Stub provider did not change files"]
+      },
       rawOutput: JSON.stringify({
         role: input.role,
         filesReceived: input.files.map((file) => file.path),
@@ -181,8 +195,9 @@ export class OllamaModelProvider implements ModelProvider {
       [
         "Ты агент Hermes, который генерирует и редактирует файлы проекта.",
         "Отвечай строго JSON-объектом без markdown и без пояснений вне JSON.",
-        'Формат ответа: {"summary":"...","changedFiles":["path"],"updatedFiles":[{"path":"...","content":"..."}],"rawOutput":"optional"}',
+        'Формат ответа: {"summary":"...","changedFiles":["path"],"updatedFiles":[{"path":"...","content":"..."}],"manifest":{"createdFiles":["path"],"updatedFiles":["path"],"validationCommands":["cmd"],"notes":["optional"]},"rawOutput":"optional"}',
         "Если файл не нужно менять, не добавляй его в updatedFiles.",
+        "Для каждого запуска обязательно верни manifest: перечисли созданные/обновленные файлы и команды проверки.",
         "Содержимое файлов возвращай полностью."
       ].join(" ");
   }
@@ -274,6 +289,7 @@ function parseAgentRunResult(role: AgentRole, rawOutput: string): AgentRunResult
     summary: payload.summary ?? "Command model provider run completed",
     changedFiles: payload.changedFiles ?? [],
     updatedFiles: payload.updatedFiles ?? [],
+    manifest: payload.manifest,
     rawOutput: payload.rawOutput ?? rawOutput
   };
 }

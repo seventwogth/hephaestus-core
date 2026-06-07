@@ -31,7 +31,7 @@ describe("CommandModelProvider", () => {
       command: "sh",
       args: [
         "-c",
-        "printf '%s' '{\"summary\":\"Handled architect\",\"changedFiles\":[\"PLAN.json\"],\"updatedFiles\":[{\"path\":\"PLAN.json\",\"content\":\"{\\\"ok\\\":true}\\\\n\"}],\"rawOutput\":\"provider-output\"}'"
+        "printf '%s' '{\"summary\":\"Handled architect\",\"changedFiles\":[\"PLAN.json\"],\"updatedFiles\":[{\"path\":\"PLAN.json\",\"content\":\"{\\\"ok\\\":true}\\\\n\"}],\"manifest\":{\"createdFiles\":[\"PLAN.json\"],\"updatedFiles\":[],\"validationCommands\":[\"cat PLAN.json\"]},\"rawOutput\":\"provider-output\"}'"
       ]
     });
 
@@ -45,6 +45,7 @@ describe("CommandModelProvider", () => {
     expect(result.summary).toBe("Handled architect");
     expect(result.changedFiles).toEqual(["PLAN.json"]);
     expect(result.updatedFiles[0]?.path).toBe("PLAN.json");
+    expect(result.manifest?.createdFiles).toEqual(["PLAN.json"]);
   });
 });
 

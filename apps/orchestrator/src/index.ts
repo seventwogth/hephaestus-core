@@ -4,6 +4,7 @@ import { analyzeRequirements, createArchitecturePlan } from "@hephaestus/agents"
 import {
   type AgentFileContext,
   type AgentRole,
+  type AgentRunManifest,
   type AgentRunResult,
   type ModelProvider
 } from "@hephaestus/hermes-adapter";
@@ -59,6 +60,7 @@ export interface AgentStageInput {
   contextFiles: string[];
   writableFiles: string[];
   validationCommand?: string;
+  requireManifest?: boolean;
 }
 
 export interface ValidateProjectStageOptions {
@@ -259,7 +261,8 @@ export class Orchestrator {
         writableFiles: options.noScaffold
           ? ["backend", "docker-compose.yml", "README.md", ".env.example", "scripts"]
           : ["backend", "docker-compose.yml", "README.md"],
-        validationCommand: "cd backend && go test ./..."
+        validationCommand: "cd backend && go test ./...",
+        requireManifest: options.noScaffold
       });
     } else {
       await generateGoBackend({ projectDir, plan });
@@ -298,7 +301,8 @@ export class Orchestrator {
         writableFiles: options.noScaffold
           ? ["backend", "docker-compose.yml", "README.md", ".env.example", "scripts"]
           : ["backend", "docker-compose.yml", "README.md"],
-        validationCommand: "cd backend && go test ./..."
+        validationCommand: "cd backend && go test ./...",
+        requireManifest: options.noScaffold
       });
     } else {
       await generateDatabaseArtifacts({ projectDir, plan });
@@ -337,7 +341,8 @@ export class Orchestrator {
         writableFiles: options.noScaffold
           ? ["frontend", "README.md", "docker-compose.yml", ".env.example", "scripts"]
           : ["frontend", "README.md"],
-        validationCommand: "cd frontend && npm run build"
+        validationCommand: "cd frontend && npm run build",
+        requireManifest: options.noScaffold
       });
     } else {
       await generateReactFrontend({ projectDir, plan });
@@ -391,7 +396,8 @@ export class Orchestrator {
         writableFiles: options.noScaffold
           ? ["backend", "frontend", "docker-compose.yml", "README.md", ".env.example", "scripts"]
           : ["backend", "frontend", "docker-compose.yml", "README.md"],
-        validationCommand: "docker compose config"
+        validationCommand: "docker compose config",
+        requireManifest: options.noScaffold
       });
     }
 
@@ -449,6 +455,14 @@ export class Orchestrator {
     });
 
     const writableTargets = input.writableFiles.map((path) => sandbox.resolveInsideRoot(path));
+    const manifest = input.requireManifest
+      ? requireAgentManifest(result, input.validationCommand)
+      : result.manifest;
+
+    if (manifest) {
+      validateAgentManifest(manifest, writableTargets, sandbox);
+      validateManifestCoversUpdatedFiles(manifest, result.updatedFiles ?? []);
+    }
 
     for (const file of result.updatedFiles ?? []) {
       const targetPath = sandbox.resolveInsideRoot(file.path);
@@ -464,6 +478,14 @@ export class Orchestrator {
       `${JSON.stringify({ at: new Date().toISOString(), input, result })}\n`,
       "utf8"
     );
+
+    if (manifest) {
+      await appendFile(
+        join(projectDir, "AGENT_MANIFESTS.jsonl"),
+        `${JSON.stringify({ at: new Date().toISOString(), role: input.role, manifest })}\n`,
+        "utf8"
+      );
+    }
 
     return result;
   }
@@ -678,6 +700,47 @@ function isWritablePath(path: string, writableFiles: string[]): boolean {
   return writableFiles.some((allowedPath) => {
     return path === allowedPath || path.startsWith(`${allowedPath}/`);
   });
+}
+
+function requireAgentManifest(
+  result: AgentRunResult,
+  validationCommand?: string
+): AgentRunManifest {
+  if (!result.manifest) {
+    throw new Error(`Agent ${result.role} did not return a required manifest`);
+  }
+
+  if (validationCommand && !result.manifest.validationCommands.includes(validationCommand)) {
+    throw new Error(`Agent ${result.role} manifest does not include validation command: ${validationCommand}`);
+  }
+
+  return result.manifest;
+}
+
+function validateAgentManifest(
+  manifest: AgentRunManifest,
+  writableTargets: string[],
+  sandbox: ProjectSandbox
+): void {
+  const manifestPaths = [...manifest.createdFiles, ...manifest.updatedFiles];
+  for (const path of manifestPaths) {
+    const targetPath = sandbox.resolveInsideRoot(path);
+    if (!isWritablePath(targetPath, writableTargets)) {
+      throw new Error(`Agent manifest path is outside allowed files: ${path}`);
+    }
+  }
+}
+
+function validateManifestCoversUpdatedFiles(
+  manifest: AgentRunManifest,
+  updatedFiles: AgentFileContext[]
+): void {
+  const manifestPaths = new Set([...manifest.createdFiles, ...manifest.updatedFiles]);
+  for (const file of updatedFiles) {
+    if (!manifestPaths.has(file.path)) {
+      throw new Error(`Agent manifest does not include updated file: ${file.path}`);
+    }
+  }
 }
 
 function formatValidationCommand(report: ValidationReport): string | undefined {
