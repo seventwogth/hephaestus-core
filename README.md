@@ -391,3 +391,4 @@ TELEGRAM_BOT_TOKEN=... npm run telegram-bot
 ## Статус реализации
 
 Сопоставление текущего состояния с `IDEA.md` ведется в `docs/STATUS.md`.
+План доведения проекта до production описан в `docs/PRODUCTION_READINESS_PLAN.md`.
