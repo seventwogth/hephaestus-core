@@ -42,6 +42,9 @@ boundary, реальные E2E с моделью и deploy story.
 
 Цель: зафиксировать текущую точку и исключить случайные регрессии.
 
+Статус: baseline реализован в GitHub Actions и документации. Следующий
+инженерный фокус — Фаза 1, execution sandbox hardening.
+
 Работы:
 
 - добавить CI pipeline для `npm ci`, `npm test`, `npm run typecheck`,

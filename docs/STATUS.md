@@ -4,6 +4,8 @@
 
 - Зафиксирован MVP-стек генерируемых приложений: React, TypeScript, Vite, Go, chi, PostgreSQL, REST и Docker Compose.
 - Создан базовый монорепозиторий ядра Hephaestus.
+- Добавлен CI baseline для `main` и PR: root workspace проходит `npm ci`, lockfile consistency check, tests, typecheck и build, а шаблон generated-webapp отдельно проверяет Docker Compose config, Go tests и frontend build.
+- Добавлены release checklist и supported runtime matrix для production-readiness baseline.
 - Добавлены контракты артефактов `SPEC`, `PLAN`, `TASKS` и `STATUS`.
 - Добавлен шаблон генерируемого приложения с frontend, backend, Docker Compose и тестами.
 - Добавлен механизм создания проекта из шаблона.
@@ -40,10 +42,11 @@
 
 ## Следующие крупные шаги
 
-1. Добавить готовые service templates для `systemd`, `launchd` и Windows Service, чтобы `poll` и `worker` поднимались как фоновые сервисы.
-2. Добавить команды управления заданиями из Telegram: повторный запуск, отмена pending job, просмотр детального лога и путь к последнему проекту.
-3. Расширить backend/frontend генераторы и агентные промпты с одной основной сущности до нескольких связанных ресурсов поверх уже расширенного DB-плана.
-4. Добавить специализированные под-агенты для API contracts, frontend state/data layer и deployment wiring вместо больших общих промптов на этап.
+1. Начать Phase 1 production roadmap: execution sandbox hardening, включая container workspace, resource limits, network policy и расширенные sandbox tests.
+2. Добавить готовые service templates для `systemd`, `launchd` и Windows Service, чтобы `poll` и `worker` поднимались как фоновые сервисы.
+3. Добавить команды управления заданиями из Telegram: повторный запуск, отмена pending job, просмотр детального лога и путь к последнему проекту.
+4. Расширить backend/frontend генераторы и агентные промпты с одной основной сущности до нескольких связанных ресурсов поверх уже расширенного DB-плана.
+5. Добавить специализированные под-агенты для API contracts, frontend state/data layer и deployment wiring вместо больших общих промптов на этап.
 
 ## Важные расхождения
 

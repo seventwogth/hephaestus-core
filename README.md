@@ -36,10 +36,16 @@ packages/
 
 ```bash
 npm install
+npm run check:lockfile
 npm run typecheck
 npm test
 npm run build
 ```
+
+Production-readiness проверки описаны здесь:
+
+- [Release checklist](docs/RELEASE_CHECKLIST.md)
+- [Supported runtime matrix](docs/RUNTIME_MATRIX.md)
 
 ## Быстрый старт через Telegram
 

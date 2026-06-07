@@ -11,6 +11,7 @@
   "scripts": {
     "build": "npm run build -w @hephaestus/contracts && npm run build -w @hephaestus/agents && npm run build -w @hephaestus/hermes-adapter && npm run build -w @hephaestus/project-sandbox && npm run build -w @hephaestus/project-validator && npm run build -w @hephaestus/templates && npm run build -w @hephaestus/project-generator && npm run build -w @hephaestus/orchestrator && npm run build -w @hephaestus/telegram-bot",
     "setup-host": "sh ./setup.sh",
+    "check:lockfile": "sh scripts/check-lockfile.sh",
     "bootstrap-project": "npm run build -w @hephaestus/contracts && npm run build -w @hephaestus/agents && npm run build -w @hephaestus/hermes-adapter && npm run build -w @hephaestus/project-sandbox && npm run build -w @hephaestus/project-validator && npm run build -w @hephaestus/templates && npm run build -w @hephaestus/project-generator && npm run build -w @hephaestus/orchestrator && node apps/orchestrator/dist/cli.js bootstrap",
     "requirements": "npm run build -w @hephaestus/contracts && npm run build -w @hephaestus/agents && npm run build -w @hephaestus/orchestrator && node apps/orchestrator/dist/cli.js requirements",
     "scaffold": "npm run build -w @hephaestus/contracts && npm run build -w @hephaestus/agents && npm run build -w @hephaestus/project-sandbox && npm run build -w @hephaestus/project-validator && npm run build -w @hephaestus/templates && npm run build -w @hephaestus/project-generator && npm run build -w @hephaestus/orchestrator && node apps/orchestrator/dist/cli.js",
