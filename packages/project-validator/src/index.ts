@@ -1,6 +1,10 @@
 import { access, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { type CommandResult, ProjectSandbox, type SandboxRunnerOptions } from "@hephaestus/project-sandbox";
+import {
+  type CommandResult,
+  ProjectSandbox,
+  type SandboxRunnerOptions
+} from "@hephaestus/project-sandbox";
 
 export interface ValidationCheck {
   id: string;
@@ -9,6 +13,7 @@ export interface ValidationCheck {
   args: string[];
   cwd: string;
   required: boolean;
+  sandboxNetwork?: string;
 }
 
 export interface ValidationCheckResult {
@@ -32,7 +37,8 @@ export const generatedWebAppValidationChecks: ValidationCheck[] = [
     command: "docker",
     args: ["compose", "config"],
     cwd: ".",
-    required: true
+    required: true,
+    sandboxNetwork: "none"
   },
   {
     id: "backend-tests",
@@ -40,7 +46,8 @@ export const generatedWebAppValidationChecks: ValidationCheck[] = [
     command: "go",
     args: ["test", "./..."],
     cwd: "backend",
-    required: true
+    required: true,
+    sandboxNetwork: "bridge"
   },
   {
     id: "frontend-install",
@@ -48,7 +55,8 @@ export const generatedWebAppValidationChecks: ValidationCheck[] = [
     command: "npm",
     args: ["ci"],
     cwd: "frontend",
-    required: true
+    required: true,
+    sandboxNetwork: "bridge"
   },
   {
     id: "frontend-tests",
@@ -56,7 +64,8 @@ export const generatedWebAppValidationChecks: ValidationCheck[] = [
     command: "npm",
     args: ["test"],
     cwd: "frontend",
-    required: true
+    required: true,
+    sandboxNetwork: "none"
   },
   {
     id: "frontend-build",
@@ -64,7 +73,8 @@ export const generatedWebAppValidationChecks: ValidationCheck[] = [
     command: "npm",
     args: ["run", "build"],
     cwd: "frontend",
-    required: true
+    required: true,
+    sandboxNetwork: "none"
   }
 ];
 
@@ -108,7 +118,9 @@ export async function validateGeneratedWebApp(
 
   try {
     for (const check of checks) {
-      const commandResult = await sandbox.run(check.command, check.args, check.cwd);
+      const commandResult = await sandbox.run(check.command, check.args, check.cwd, {
+        runner: withSandboxNetwork(options.runner, check.sandboxNetwork)
+      });
       const passed = commandResult.exitCode === 0 && !commandResult.timedOut;
       results.push({ check, commandResult, passed });
 
@@ -160,6 +172,7 @@ export function renderReviewMarkdown(report: ValidationReport): string {
     lines.push(`- Сигнал: ${result.commandResult.signal ?? "нет"}`);
     lines.push(`- Таймаут: ${result.commandResult.timedOut ? "да" : "нет"}`);
     lines.push(`- Runner: ${result.commandResult.runner}`);
+    lines.push(`- Network: ${result.commandResult.runnerNetwork ?? "host"}`);
     appendOutput(lines, "stdout", result.commandResult.stdout, result.commandResult.stdoutTruncated);
     appendOutput(lines, "stderr", result.commandResult.stderr, result.commandResult.stderrTruncated);
     lines.push("");
@@ -188,6 +201,20 @@ function appendOutput(lines: string[], title: string, output: string, truncated:
   lines.push("```text");
   lines.push(trimmedOutput);
   lines.push("```");
+}
+
+function withSandboxNetwork(
+  runner: SandboxRunnerOptions | undefined,
+  network: string | undefined
+): SandboxRunnerOptions | undefined {
+  if (!runner || runner.type !== "docker" || !network) {
+    return runner;
+  }
+
+  return {
+    ...runner,
+    network
+  };
 }
 
 async function fileExists(path: string): Promise<boolean> {

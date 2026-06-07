@@ -22,6 +22,11 @@ describe("project validator", () => {
       const installCheck = checks.find((check) => check.id === "frontend-install");
 
       expect(installCheck?.args).toEqual(["ci"]);
+      expect(checks.find((check) => check.id === "compose-config")?.sandboxNetwork).toBe("none");
+      expect(checks.find((check) => check.id === "backend-tests")?.sandboxNetwork).toBe("bridge");
+      expect(installCheck?.sandboxNetwork).toBe("bridge");
+      expect(checks.find((check) => check.id === "frontend-tests")?.sandboxNetwork).toBe("none");
+      expect(checks.find((check) => check.id === "frontend-build")?.sandboxNetwork).toBe("none");
     } finally {
       await rm(projectDir, { recursive: true, force: true });
     }
@@ -68,7 +73,8 @@ describe("project validator", () => {
             stdoutTruncated: false,
             stderrTruncated: false,
             signal: null,
-            runner: "host"
+            runner: "host",
+            runnerNetwork: null
           }
         }
       ]

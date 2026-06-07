@@ -77,7 +77,9 @@ interface. Docker runner уже умеет формировать запуск �
 controlled env, network mode и базовыми CPU/memory/pids параметрами. Добавлен
 validation image `hephaestus/validation:local`, CI проверяет его сборку, а
 CLI/Telegram worker могут включать Docker runner через `HEPHAESTUS_SANDBOX_*`.
-Не закрыто: disk limits и network policy по стадиям.
+Для generated-webapp validation добавлена per-check network policy: dependency
+шаги получают `bridge`, остальные validation checks получают `none`. Не
+закрыто: disk limits и artifact allowlist после завершения job.
 
 Работы:
 

@@ -32,3 +32,6 @@ GitHub Actions запускает production-readiness baseline на Ubuntu:
 - Docker sandbox runner включается через `HEPHAESTUS_SANDBOX_RUNNER=docker`.
   По умолчанию используется host runner, чтобы local/dev flow не требовал
   validation image.
+- Для стандартного generated-webapp validation Docker runner использует
+  per-check network policy: dependency/download checks получают `bridge`,
+  остальные checks получают `none`.

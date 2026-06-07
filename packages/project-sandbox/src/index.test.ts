@@ -213,6 +213,7 @@ describe("ProjectSandbox", () => {
     });
 
     expect(spec.runner).toBe("docker");
+    expect(spec.runnerNetwork).toBe("none");
     expect(spec.command).toBe("docker");
     expect(spec.args).toEqual([
       "run",
@@ -240,6 +241,26 @@ describe("ProjectSandbox", () => {
       "test"
     ]);
     expect(spec.hostEnv).not.toHaveProperty("HEPHAESTUS_EXPLICIT_ENV");
+  });
+
+  it("allows per-run docker runner overrides", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "hephaestus-sandbox-"));
+    const sandbox = new ProjectSandbox({
+      rootDir,
+      allowedCommands: ["/usr/bin/env"],
+      runner: { type: "host" }
+    });
+
+    try {
+      const result = await sandbox.run("/usr/bin/env", [], ".", {
+        runner: { type: "host" }
+      });
+
+      expect(result.runner).toBe("host");
+      expect(result.runnerNetwork).toBeNull();
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
   });
 
   it("parses docker sandbox runner settings from env", () => {

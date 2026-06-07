@@ -42,6 +42,11 @@ export interface CommandResult {
   stderrTruncated: boolean;
   signal: NodeJS.Signals | null;
   runner: "host" | "docker";
+  runnerNetwork: string | null;
+}
+
+export interface CommandRunOptions {
+  runner?: SandboxRunnerOptions;
 }
 
 export interface SandboxOptions {
@@ -89,16 +94,22 @@ export class ProjectSandbox {
     await writeFile(target, content, "utf8");
   }
 
-  async run(command: string, args: string[] = [], cwd = "."): Promise<CommandResult> {
+  async run(
+    command: string,
+    args: string[] = [],
+    cwd = ".",
+    options: CommandRunOptions = {}
+  ): Promise<CommandResult> {
     if (!this.allowedCommands.has(command)) {
       throw new Error(`Command is not allowed: ${command}`);
     }
 
+    const runner = options.runner ?? this.runner;
     const workingDirectory = this.resolveInsideRoot(cwd);
     await this.assertSafeWorkingDirectory(workingDirectory, cwd);
-    const env = await this.buildCommandEnv(this.runnerType());
+    const env = await this.buildCommandEnv(runnerType(runner));
     const commandSpec = buildCommandSpec({
-      runner: this.runner,
+      runner,
       rootDir: this.rootDir,
       command,
       args,
@@ -165,7 +176,8 @@ export class ProjectSandbox {
             stdoutTruncated: stdout.truncated,
             stderrTruncated: stderr.truncated,
             signal,
-            runner: commandSpec.runner
+            runner: commandSpec.runner,
+            runnerNetwork: commandSpec.runnerNetwork
           });
         }
       });
@@ -228,10 +240,6 @@ export class ProjectSandbox {
     }
 
     return env;
-  }
-
-  private runnerType(): "host" | "docker" {
-    return this.runner.type === "docker" ? "docker" : "host";
   }
 
   private getRuntimeDirMap(rootDir: string): { homeDir: string; tmpDir: string; cacheDir: string } {
@@ -360,6 +368,7 @@ export interface CommandSpec {
   hostCwd?: string;
   hostEnv: Record<string, string>;
   runner: "host" | "docker";
+  runnerNetwork: string | null;
 }
 
 export function buildCommandSpec(input: CommandSpecInput): CommandSpec {
@@ -369,17 +378,19 @@ export function buildCommandSpec(input: CommandSpecInput): CommandSpec {
       args: input.args,
       hostCwd: resolve(input.rootDir, input.cwd),
       hostEnv: input.env,
-      runner: "host"
+      runner: "host",
+      runnerNetwork: null
     };
   }
 
   const workspaceMount = input.runner.workspaceMount ?? DEFAULT_CONTAINER_WORKSPACE;
+  const network = input.runner.network ?? "none";
   const containerCwd = toContainerPath(workspaceMount, input.cwd);
   const dockerArgs = [
     "run",
     "--rm",
     "--network",
-    input.runner.network ?? "none",
+    network,
     "--mount",
     `type=bind,src=${input.rootDir},dst=${workspaceMount}`,
     "-w",
@@ -413,7 +424,8 @@ export function buildCommandSpec(input: CommandSpecInput): CommandSpec {
     args: dockerArgs,
     hostCwd: input.rootDir,
     hostEnv: buildDockerHostEnv(),
-    runner: "docker"
+    runner: "docker",
+    runnerNetwork: network
   };
 }
 
@@ -481,6 +493,10 @@ function parseOptionalPositiveInteger(name: string, value: string | undefined): 
   }
 
   return parsed;
+}
+
+function runnerType(runner: SandboxRunnerOptions): "host" | "docker" {
+  return runner.type === "docker" ? "docker" : "host";
 }
 
 function createLimitedOutputBuffer(maxBytes: number): {

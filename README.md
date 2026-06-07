@@ -147,6 +147,11 @@ export HEPHAESTUS_AVAILABLE_MODELS="qwen2.5-coder:7b|Qwen 7B|Быстрее,qwen
 - `HEPHAESTUS_SANDBOX_NETWORK` — network mode для validation runner, по умолчанию `none`
 - `HEPHAESTUS_SANDBOX_CPUS`, `HEPHAESTUS_SANDBOX_MEMORY`, `HEPHAESTUS_SANDBOX_PIDS_LIMIT` — базовые лимиты Docker runner
 
+Для стандартной проверки generated-webapp Docker runner включает сеть только
+для dependency/download шагов (`go test` и `npm ci`/`npm install`). `docker
+compose config`, frontend tests и frontend build запускаются с network mode
+`none`.
+
 Validation image можно собрать локально:
 
 ```bash
