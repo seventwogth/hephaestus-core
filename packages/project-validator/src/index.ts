@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { access, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type CommandResult, ProjectSandbox } from "@hephaestus/project-sandbox";
 
@@ -44,9 +44,9 @@ export const generatedWebAppValidationChecks: ValidationCheck[] = [
   },
   {
     id: "frontend-install",
-    title: "Установка зависимостей frontend",
+    title: "Воспроизводимая установка зависимостей frontend",
     command: "npm",
-    args: ["install"],
+    args: ["ci"],
     cwd: "frontend",
     required: true
   },
@@ -75,11 +75,27 @@ export interface ValidateProjectOptions {
   writeReview?: boolean;
 }
 
+export async function getGeneratedWebAppValidationChecks(projectDir: string): Promise<ValidationCheck[]> {
+  const hasFrontendLockfile = await fileExists(join(projectDir, "frontend", "package-lock.json"));
+
+  return generatedWebAppValidationChecks.map((check) => {
+    if (check.id !== "frontend-install" || hasFrontendLockfile) {
+      return check;
+    }
+
+    return {
+      ...check,
+      title: "Установка зависимостей frontend",
+      args: ["install"]
+    };
+  });
+}
+
 export async function validateGeneratedWebApp(
   options: ValidateProjectOptions
 ): Promise<ValidationReport> {
   const startedAt = new Date().toISOString();
-  const checks = options.checks ?? generatedWebAppValidationChecks;
+  const checks = options.checks ?? await getGeneratedWebAppValidationChecks(options.projectDir);
   const sandbox = new ProjectSandbox({
     rootDir: options.projectDir,
     allowedCommands: Array.from(new Set(checks.map((check) => check.command))),
@@ -156,4 +172,17 @@ function appendOutput(lines: string[], title: string, output: string): void {
   lines.push("```text");
   lines.push(trimmedOutput);
   lines.push("```");
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return false;
+    }
+
+    throw error;
+  }
 }

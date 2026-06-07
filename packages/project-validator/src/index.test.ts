@@ -1,8 +1,9 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import {
+  getGeneratedWebAppValidationChecks,
   renderReviewMarkdown,
   validateGeneratedWebApp,
   type ValidationCheck,
@@ -10,6 +11,35 @@ import {
 } from "./index.js";
 
 describe("project validator", () => {
+  it("uses npm ci for frontend dependencies when a lockfile exists", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-validation-"));
+
+    try {
+      await mkdir(join(projectDir, "frontend"), { recursive: true });
+      await writeFile(join(projectDir, "frontend", "package-lock.json"), "{}\n", "utf8");
+
+      const checks = await getGeneratedWebAppValidationChecks(projectDir);
+      const installCheck = checks.find((check) => check.id === "frontend-install");
+
+      expect(installCheck?.args).toEqual(["ci"]);
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to npm install when frontend lockfile is missing", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-validation-"));
+
+    try {
+      const checks = await getGeneratedWebAppValidationChecks(projectDir);
+      const installCheck = checks.find((check) => check.id === "frontend-install");
+
+      expect(installCheck?.args).toEqual(["install"]);
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it("renders a Russian REVIEW.md report", () => {
     const report: ValidationReport = {
       projectDir: "/tmp/project",
