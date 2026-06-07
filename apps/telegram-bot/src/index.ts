@@ -123,7 +123,7 @@ export interface ProjectBootstrapper {
   bootstrap(input: BootstrapProjectInput): Promise<BootstrappedProject>;
 }
 
-export type ProjectJobStatus = "pending" | "running" | "completed" | "failed";
+export type ProjectJobStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
 export interface ProjectJob {
   id: string;
@@ -135,6 +135,7 @@ export interface ProjectJob {
   startedAt?: string;
   finishedAt?: string;
   leaseExpiresAt?: string;
+  cancelledAt?: string;
   projectDir?: string;
   projectName?: string;
   error?: string;
@@ -143,8 +144,11 @@ export interface ProjectJob {
 export interface ProjectJobQueue {
   enqueue(input: BootstrapProjectInput): Promise<ProjectJob>;
   listByChat(chatId: number): Promise<ProjectJob[]>;
+  getByChat(chatId: number, jobId: string): Promise<ProjectJob | null>;
   claimNext(): Promise<ProjectJob | null>;
   renew?(jobId: string): Promise<ProjectJob>;
+  retry(jobId: string, chatId: number): Promise<ProjectJob>;
+  cancel(jobId: string, chatId: number): Promise<ProjectJob>;
   complete(jobId: string, project: BootstrappedProject): Promise<ProjectJob>;
   fail(jobId: string, error: string): Promise<ProjectJob>;
 }
@@ -163,6 +167,10 @@ export class InMemoryProjectJobQueue implements ProjectJobQueue {
       .filter((job) => job.chatId === chatId)
       .slice()
       .sort((left, right) => right.queuedAt.localeCompare(left.queuedAt));
+  }
+
+  async getByChat(chatId: number, jobId: string): Promise<ProjectJob | null> {
+    return this.jobs.find((job) => job.chatId === chatId && job.id === jobId) ?? null;
   }
 
   async claimNext(): Promise<ProjectJob | null> {
@@ -200,10 +208,50 @@ export class InMemoryProjectJobQueue implements ProjectJobQueue {
     });
   }
 
+  async retry(jobId: string, chatId: number): Promise<ProjectJob> {
+    const job = await this.getByChat(chatId, jobId);
+    if (!job) {
+      throw new Error(`Unknown project job: ${jobId}`);
+    }
+
+    if (!isTerminalJobStatus(job.status)) {
+      throw new Error(`Job is not finished yet: ${jobId}`);
+    }
+
+    return this.enqueue({
+      chatId,
+      description: job.description,
+      selectedModel: job.selectedModel
+    });
+  }
+
+  async cancel(jobId: string, chatId: number): Promise<ProjectJob> {
+    const job = await this.getByChat(chatId, jobId);
+    if (!job) {
+      throw new Error(`Unknown project job: ${jobId}`);
+    }
+
+    if (isTerminalJobStatus(job.status)) {
+      return job;
+    }
+
+    return this.update(jobId, {
+      status: "cancelled",
+      finishedAt: new Date().toISOString(),
+      leaseExpiresAt: undefined,
+      cancelledAt: new Date().toISOString(),
+      error: undefined
+    });
+  }
+
   private async update(jobId: string, patch: Partial<ProjectJob>): Promise<ProjectJob> {
     const index = this.jobs.findIndex((job) => job.id === jobId);
     if (index === -1) {
       throw new Error(`Unknown project job: ${jobId}`);
+    }
+
+    if (this.jobs[index].status === "cancelled" && isTerminalPatch(patch)) {
+      return this.jobs[index];
     }
 
     const updated = { ...this.jobs[index], ...patch };
@@ -248,6 +296,11 @@ export class FileProjectJobQueue implements ProjectJobQueue {
     return jobs
       .filter((job) => job.chatId === chatId)
       .sort((left, right) => right.queuedAt.localeCompare(left.queuedAt));
+  }
+
+  async getByChat(chatId: number, jobId: string): Promise<ProjectJob | null> {
+    const jobs = await this.readAll();
+    return jobs.find((job) => job.chatId === chatId && job.id === jobId) ?? null;
   }
 
   async claimNext(): Promise<ProjectJob | null> {
@@ -315,12 +368,70 @@ export class FileProjectJobQueue implements ProjectJobQueue {
     });
   }
 
+  async retry(jobId: string, chatId: number): Promise<ProjectJob> {
+    return this.withLock(async () => {
+      const jobs = await this.readAll();
+      const job = jobs.find((item) => item.chatId === chatId && item.id === jobId);
+      if (!job) {
+        throw new Error(`Unknown project job: ${jobId}`);
+      }
+
+      if (!isTerminalJobStatus(job.status)) {
+        throw new Error(`Job is not finished yet: ${jobId}`);
+      }
+
+      const retriedJob = createProjectJob(
+        {
+          chatId,
+          description: job.description,
+          selectedModel: job.selectedModel
+        },
+        this.now()
+      );
+      jobs.push(retriedJob);
+      await this.writeAll(jobs);
+      return retriedJob;
+    });
+  }
+
+  async cancel(jobId: string, chatId: number): Promise<ProjectJob> {
+    return this.withLock(async () => {
+      const jobs = await this.readAll();
+      const index = jobs.findIndex((job) => job.chatId === chatId && job.id === jobId);
+      if (index === -1) {
+        throw new Error(`Unknown project job: ${jobId}`);
+      }
+
+      const current = jobs[index];
+      if (isTerminalJobStatus(current.status)) {
+        return current;
+      }
+
+      const now = this.now().toISOString();
+      const cancelled = {
+        ...current,
+        status: "cancelled" as const,
+        finishedAt: now,
+        leaseExpiresAt: undefined,
+        cancelledAt: now,
+        error: undefined
+      };
+      jobs[index] = cancelled;
+      await this.writeAll(jobs);
+      return cancelled;
+    });
+  }
+
   private async update(jobId: string, patch: Partial<ProjectJob>): Promise<ProjectJob> {
     return this.withLock(async () => {
       const jobs = await this.readAll();
       const index = jobs.findIndex((job) => job.id === jobId);
       if (index === -1) {
         throw new Error(`Unknown project job: ${jobId}`);
+      }
+
+      if (jobs[index].status === "cancelled" && isTerminalPatch(patch)) {
+        return jobs[index];
       }
 
       const updated = { ...jobs[index], ...patch };
@@ -478,7 +589,11 @@ export class HephaestusTelegramBot {
             "Команды:",
             "/new — начать новый проект",
             "/models — показать доступные модели",
-            "/status — показать последние задания"
+            "/status — показать последние задания",
+            "/job <id> — детали задания",
+            "/last — путь к последнему готовому проекту",
+            "/cancel <id> — отменить задание",
+            "/retry <id> — повторить завершенное задание"
           ].join("\n")
         )
       ];
@@ -509,6 +624,40 @@ export class HephaestusTelegramBot {
     if (text === "/status") {
       const jobs = await this.options.jobQueue.listByChat(message.chat.id);
       return [sendMessage(message.chat.id, renderJobStatus(jobs))];
+    }
+
+    if (text === "/last") {
+      const jobs = await this.options.jobQueue.listByChat(message.chat.id);
+      return [sendMessage(message.chat.id, renderLastProject(jobs))];
+    }
+
+    const jobCommand = parseJobCommand(text);
+    if (jobCommand) {
+      if (jobCommand.command === "/job") {
+        const job = await this.options.jobQueue.getByChat(message.chat.id, jobCommand.jobId);
+        return [sendMessage(message.chat.id, job ? renderJobDetails(job) : `Задание не найдено: ${jobCommand.jobId}`)];
+      }
+
+      if (jobCommand.command === "/cancel") {
+        try {
+          const job = await this.options.jobQueue.cancel(jobCommand.jobId, message.chat.id);
+          return [sendMessage(message.chat.id, renderCancelResult(job))];
+        } catch (error) {
+          return [sendMessage(message.chat.id, formatCommandError(error))];
+        }
+      }
+
+      try {
+        const job = await this.options.jobQueue.retry(jobCommand.jobId, message.chat.id);
+        return [
+          sendMessage(
+            message.chat.id,
+            [`Повтор поставлен в очередь: ${job.id}`, `Модель: ${job.selectedModel.label}`].join("\n")
+          )
+        ];
+      } catch (error) {
+        return [sendMessage(message.chat.id, formatCommandError(error))];
+      }
     }
 
     const session = await this.options.sessionStore.read(message.chat.id);
@@ -738,6 +887,18 @@ export class ProjectJobRunner {
         selectedModel: job.selectedModel
       });
       const completedJob = await this.queue.complete(job.id, project);
+      if (completedJob.status === "cancelled") {
+        await this.api.sendMessage(
+          sendMessage(
+            job.chatId,
+            [
+              `Задание отменено: ${completedJob.id}`,
+              "Генерация уже могла завершиться на диске, но статус задания сохранен как отмененный."
+            ].join("\n")
+          )
+        );
+        return completedJob;
+      }
 
       await this.api.sendMessage(
         sendMessage(
@@ -755,6 +916,18 @@ export class ProjectJobRunner {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const failedJob = await this.queue.fail(job.id, message);
+      if (failedJob.status === "cancelled") {
+        await this.api.sendMessage(
+          sendMessage(
+            job.chatId,
+            [
+              `Задание отменено: ${failedJob.id}`,
+              "Генерация остановилась с ошибкой после отмены, статус задания сохранен как отмененный."
+            ].join("\n")
+          )
+        );
+        return failedJob;
+      }
 
       await this.api.sendMessage(
         sendMessage(
@@ -865,8 +1038,78 @@ function renderJobStatus(jobs: ProjectJob[]): string {
     ...jobs.slice(0, 5).map((job) => {
       const details = job.projectDir ? ` — ${job.projectDir}` : job.error ? ` — ${job.error}` : "";
       return `- ${job.id}: ${translateJobStatus(job.status)} (${job.selectedModel.label})${details}`;
-    })
+    }),
+    "",
+    "Команды: /job <id>, /last, /cancel <id>, /retry <id>"
   ].join("\n");
+}
+
+function renderJobDetails(job: ProjectJob): string {
+  return [
+    `Задание: ${job.id}`,
+    `Статус: ${translateJobStatus(job.status)}`,
+    `Модель: ${job.selectedModel.label}`,
+    `Создано: ${job.queuedAt}`,
+    job.startedAt ? `Запущено: ${job.startedAt}` : null,
+    job.finishedAt ? `Завершено: ${job.finishedAt}` : null,
+    job.cancelledAt ? `Отменено: ${job.cancelledAt}` : null,
+    job.projectName ? `Проект: ${job.projectName}` : null,
+    job.projectDir ? `Директория: ${job.projectDir}` : null,
+    job.error ? `Ошибка: ${job.error}` : null
+  ].filter((line): line is string => Boolean(line)).join("\n");
+}
+
+function renderLastProject(jobs: ProjectJob[]): string {
+  const completedJob = jobs.find((job) => job.status === "completed" && job.projectDir);
+  if (!completedJob) {
+    return "Готовых проектов пока нет.";
+  }
+
+  return [
+    `Последний готовый проект: ${completedJob.projectName ?? completedJob.id}`,
+    `Задание: ${completedJob.id}`,
+    `Модель: ${completedJob.selectedModel.label}`,
+    `Директория: ${completedJob.projectDir}`
+  ].join("\n");
+}
+
+function renderCancelResult(job: ProjectJob): string {
+  if (job.status === "cancelled") {
+    return [
+      `Задание отменено: ${job.id}`,
+      job.startedAt
+        ? "Если генерация уже выполнялась, процесс может дописать файлы на диск, но статус задания останется отмененным."
+        : null
+    ].filter((line): line is string => Boolean(line)).join("\n");
+  }
+
+  return `Задание уже завершено: ${job.id} (${translateJobStatus(job.status)})`;
+}
+
+function parseJobCommand(text: string): { command: "/job" | "/cancel" | "/retry"; jobId: string } | null {
+  const [rawCommand, jobId] = text.split(/\s+/, 2);
+  const command = rawCommand?.split("@", 1)[0];
+  if (command !== "/job" && command !== "/cancel" && command !== "/retry") {
+    return null;
+  }
+
+  return {
+    command,
+    jobId: jobId ?? ""
+  };
+}
+
+function formatCommandError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.startsWith("Unknown project job")) {
+    return "Задание не найдено.";
+  }
+
+  if (message.startsWith("Job is not finished yet")) {
+    return "Повторить можно только завершенное, ошибочное или отмененное задание.";
+  }
+
+  return message;
 }
 
 function resolveModelRuntime(
@@ -910,7 +1153,7 @@ async function parseTelegramResponse(response: Response): Promise<{ ok: boolean;
 function createProjectJob(input: BootstrapProjectInput, date = new Date()): ProjectJob {
   const now = date.toISOString();
   return {
-    id: `job-${now.replaceAll(/[:.]/g, "").replace("T", "-").replace("Z", "")}`,
+    id: `job-${now.replaceAll(/[:.]/g, "").replace("T", "-").replace("Z", "")}-${randomUUID().slice(0, 8)}`,
     chatId: input.chatId,
     description: input.description,
     selectedModel: input.selectedModel,
@@ -929,7 +1172,17 @@ function translateJobStatus(status: ProjectJobStatus): string {
       return "завершено";
     case "failed":
       return "ошибка";
+    case "cancelled":
+      return "отменено";
   }
+}
+
+function isTerminalJobStatus(status: ProjectJobStatus): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function isTerminalPatch(patch: Partial<ProjectJob>): boolean {
+  return patch.status === "completed" || patch.status === "failed";
 }
 
 function timestampLabel(date: Date): string {

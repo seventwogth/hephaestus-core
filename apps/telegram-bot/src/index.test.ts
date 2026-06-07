@@ -134,6 +134,86 @@ describe("HephaestusTelegramBot", () => {
     expect(messageActions[0]?.text).toContain("Модель: Quality");
     expect(messageActions[0]?.text).toContain("поставлен в очередь");
   });
+
+  it("renders job details and the latest completed project", async () => {
+    const sessionStore = new InMemoryTelegramSessionStore();
+    const jobQueue = new InMemoryProjectJobQueue();
+    const bot = new HephaestusTelegramBot({
+      models: parseAvailableModels("quality|Quality"),
+      sessionStore,
+      jobQueue
+    });
+    const job = await jobQueue.enqueue({
+      chatId: 100,
+      description: "Создай сервис книг",
+      selectedModel: { id: "quality", label: "Quality" }
+    });
+    await jobQueue.complete(job.id, {
+      projectDir: "/tmp/book-tracker",
+      projectName: "book-tracker",
+      selectedModel: { id: "quality", label: "Quality" }
+    });
+
+    const detailActions = await bot.handleUpdate({
+      update_id: 3,
+      message: {
+        message_id: 12,
+        chat: { id: 100 },
+        text: `/job ${job.id}`
+      }
+    });
+    const lastActions = await bot.handleUpdate({
+      update_id: 4,
+      message: {
+        message_id: 13,
+        chat: { id: 100 },
+        text: "/last"
+      }
+    });
+
+    expect(detailActions[0]?.text).toContain(`Задание: ${job.id}`);
+    expect(detailActions[0]?.text).toContain("Директория: /tmp/book-tracker");
+    expect(lastActions[0]?.text).toContain("Последний готовый проект: book-tracker");
+    expect(lastActions[0]?.text).toContain("Директория: /tmp/book-tracker");
+  });
+
+  it("cancels and retries queued jobs from Telegram commands", async () => {
+    const sessionStore = new InMemoryTelegramSessionStore();
+    const jobQueue = new InMemoryProjectJobQueue();
+    const bot = new HephaestusTelegramBot({
+      models: parseAvailableModels("quality|Quality"),
+      sessionStore,
+      jobQueue
+    });
+    const job = await jobQueue.enqueue({
+      chatId: 100,
+      description: "Создай сервис книг",
+      selectedModel: { id: "quality", label: "Quality" }
+    });
+
+    const cancelActions = await bot.handleUpdate({
+      update_id: 5,
+      message: {
+        message_id: 14,
+        chat: { id: 100 },
+        text: `/cancel ${job.id}`
+      }
+    });
+    const retryActions = await bot.handleUpdate({
+      update_id: 6,
+      message: {
+        message_id: 15,
+        chat: { id: 100 },
+        text: `/retry ${job.id}`
+      }
+    });
+    const jobs = await jobQueue.listByChat(100);
+
+    expect(cancelActions[0]?.text).toContain(`Задание отменено: ${job.id}`);
+    expect(retryActions[0]?.text).toContain("Повтор поставлен в очередь");
+    expect(jobs.some((item) => item.id === job.id && item.status === "cancelled")).toBe(true);
+    expect(jobs.some((item) => item.id !== job.id && item.status === "pending")).toBe(true);
+  });
 });
 
 describe("persistent Telegram bot state", () => {
@@ -284,6 +364,53 @@ describe("ProjectJobRunner", () => {
     expect(messages.some((message) => message.includes("Запущена генерация проекта"))).toBe(true);
     expect(messages.some((message) => message.includes("Проект создан"))).toBe(true);
   });
+
+  it("does not overwrite a running job cancelled during bootstrap", async () => {
+    const jobQueue = new InMemoryProjectJobQueue();
+    const messages: string[] = [];
+    let finishBootstrap: (() => void) | null = null;
+    const api: TelegramApi = {
+      async getUpdates() {
+        return [];
+      },
+      async sendMessage(action) {
+        messages.push(action.text);
+      },
+      async answerCallbackQuery() {}
+    };
+    const bootstrapper: ProjectBootstrapper = {
+      async bootstrap(input) {
+        await new Promise<void>((resolve) => {
+          finishBootstrap = resolve;
+        });
+        return {
+          projectDir: "/tmp/project",
+          projectName: "book-tracker",
+          selectedModel: input.selectedModel
+        };
+      }
+    };
+    const originalJob = await jobQueue.enqueue({
+      chatId: 100,
+      description: "Создай сервис книг",
+      selectedModel: { id: "quality", label: "Quality" }
+    });
+
+    const runner = new ProjectJobRunner(jobQueue, bootstrapper, api);
+    const runPromise = runner.runNext();
+    while (!finishBootstrap) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    await jobQueue.cancel(originalJob.id, 100);
+    const resolveBootstrap: () => void = finishBootstrap;
+    resolveBootstrap();
+    const job = await runPromise;
+
+    expect(job?.status).toBe("cancelled");
+    expect(messages.some((message) => message.includes("Задание отменено"))).toBe(true);
+    expect(messages.some((message) => message.includes("Проект создан"))).toBe(false);
+  });
 });
 
 describe("TelegramPollingRuntime", () => {
@@ -400,6 +527,9 @@ describe("TelegramWorkerRuntime", () => {
       async listByChat() {
         return [];
       },
+      async getByChat() {
+        return null;
+      },
       async claimNext() {
         attempts += 1;
         if (attempts === 1) {
@@ -409,6 +539,12 @@ describe("TelegramWorkerRuntime", () => {
         return null;
       },
       async complete() {
+        throw new Error("unused");
+      },
+      async retry() {
+        throw new Error("unused");
+      },
+      async cancel() {
         throw new Error("unused");
       },
       async fail() {
