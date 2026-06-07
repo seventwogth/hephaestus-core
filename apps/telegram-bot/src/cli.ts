@@ -25,12 +25,16 @@ async function main(): Promise<void> {
   const models = parseAvailableModels(process.env.HEPHAESTUS_AVAILABLE_MODELS);
   const mode = parseBotMode(process.argv.slice(2)[0] ?? process.env.HEPHAESTUS_BOT_MODE);
   const workerPollIntervalMs = parseInterval(process.env.HEPHAESTUS_JOB_POLL_INTERVAL_MS);
+  const noScaffold = parseBoolean(process.env.HEPHAESTUS_NO_SCAFFOLD);
   const api = new TelegramHttpApi({ token });
   const sessionStore = new FileTelegramSessionStore(joinPath(stateDir, "sessions.json"));
   const jobQueue = new FileProjectJobQueue(joinPath(stateDir, "jobs.json"));
   const bootstrapper = new LocalProjectBootstrapper({
     outputRoot: projectsDir,
-    createModelProvider: (model) => createModelProviderForOption(model)
+    createModelProvider: (model) => createModelProviderForOption(model),
+    bootstrapOptions: {
+      noScaffold
+    }
   });
   const bot = new HephaestusTelegramBot({
     models,
@@ -79,6 +83,23 @@ function parseInterval(rawValue: string | undefined): number {
   }
 
   return parsed;
+}
+
+function parseBoolean(rawValue: string | undefined): boolean {
+  if (!rawValue) {
+    return false;
+  }
+
+  const value = rawValue.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(value)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(value)) {
+    return false;
+  }
+
+  throw new Error(`Invalid boolean value: ${rawValue}`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

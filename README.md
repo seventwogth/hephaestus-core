@@ -129,6 +129,7 @@ export HEPHAESTUS_AVAILABLE_MODELS="qwen2.5-coder:7b|Qwen 7B|Быстрее,qwen
 - `HEPHAESTUS_OLLAMA_BASE_URL` — адрес Ollama API, по умолчанию `http://127.0.0.1:11434`
 - `HEPHAESTUS_MODEL_RUNTIME_MAP` — ручное сопоставление id модели и runtime, например `quality=ollama:qwen2.5-coder:14b`
 - `HEPHAESTUS_OLLAMA_TIMEOUT_MS` — таймаут одного LLM agent run
+- `HEPHAESTUS_NO_SCAFFOLD=true` — agent-only режим: шаблон приложения не копируется, runnable code создаётся агентами с нуля
 
 ### 6. Запустить Telegram-бота
 
@@ -292,6 +293,7 @@ npm run bootstrap-project -- --text "Создай сервис учета кни
 - `--model` — id локальной модели, по умолчанию это Ollama model id
 - `--no-validate` — пропустить validation stage
 - `--no-fix` — не запускать fixer loop после неуспешной проверки
+- `--no-scaffold` — не копировать шаблон приложения; весь runnable repo создают агенты с нуля
 
 LLM-first bootstrap теперь идёт по цепочке:
 
@@ -304,6 +306,14 @@ LLM-first bootstrap теперь идёт по цепочке:
 7. `integrator`
 8. `validate -> fixer -> revalidate`
 9. `documentation`
+
+По умолчанию перед агентными стадиями копируется фиксированный шаблон
+`generated-webapp`, чтобы повысить шанс успешной сборки. В режиме
+`--no-scaffold` шаблон не используется: Hephaestus создаёт только orchestration
+artifacts (`REQUEST.md`, `SPEC.json`, `PLAN.json`, `STATUS.json`, `TASKS.json`),
+а `backend`, `frontend`, `docker-compose.yml`, `.env.example`, `scripts` и
+документацию должны вернуть агенты. Этот режим требует реальный `ModelProvider`;
+deterministic fallback без модели в no-scaffold режиме недоступен.
 
 ## Telegram-бот MVP
 
@@ -328,6 +338,7 @@ TELEGRAM_BOT_TOKEN=... npm run telegram-bot
 - `HEPHAESTUS_OLLAMA_BASE_URL` — URL локального Ollama API, по умолчанию `http://127.0.0.1:11434`
 - `HEPHAESTUS_OLLAMA_TIMEOUT_MS` — таймаут одного agent run для Ollama
 - `HEPHAESTUS_JOB_POLL_INTERVAL_MS` — интервал опроса очереди worker в миллисекундах
+- `HEPHAESTUS_NO_SCAFFOLD` — включить no-scaffold bootstrap для Telegram jobs
 
 После выбора модели бот сохраняет её в `MODEL_SELECTION.json` внутри созданного
 проекта и, если модель не `stub`, поднимает для неё реальный provider.

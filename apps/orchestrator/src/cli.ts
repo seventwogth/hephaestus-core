@@ -56,6 +56,7 @@ export interface BootstrapCliOptions {
   model: string;
   runValidation: boolean;
   autoFix: boolean;
+  noScaffold: boolean;
 }
 
 export function parseScaffoldArgs(args: string[]): ScaffoldCliOptions {
@@ -152,10 +153,11 @@ export function parseBootstrapArgs(args: string[]): BootstrapCliOptions {
   const model = readOption(args, "--model");
   const runValidation = !args.includes("--no-validate");
   const autoFix = !args.includes("--no-fix");
+  const noScaffold = args.includes("--no-scaffold");
 
   if ((!text && !inputPath) || !outDir || !model) {
     throw new Error(
-      "Использование: hephaestus-scaffold bootstrap --text \"описание\" --out ./generated-projects/my-app --model qwen2.5-coder:14b"
+      "Использование: hephaestus-scaffold bootstrap --text \"описание\" --out ./generated-projects/my-app --model qwen2.5-coder:14b [--no-scaffold]"
     );
   }
 
@@ -165,7 +167,8 @@ export function parseBootstrapArgs(args: string[]): BootstrapCliOptions {
     outDir,
     model,
     runValidation,
-    autoFix
+    autoFix,
+    noScaffold
   };
 }
 
@@ -253,6 +256,7 @@ export async function bootstrapProjectFromDescription(
   const orchestrator = new Orchestrator(new FileProjectStateStore(), provider);
 
   await orchestrator.bootstrapProjectFromPrompt(outDir, text, {
+    noScaffold: options.noScaffold,
     runValidation: options.runValidation,
     autoFix: options.autoFix,
     ...bootstrapOptions

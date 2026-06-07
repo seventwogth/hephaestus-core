@@ -82,7 +82,24 @@ describe("scaffold CLI", () => {
       outDir: "app",
       model: "qwen2.5-coder:14b",
       runValidation: true,
-      autoFix: true
+      autoFix: true,
+      noScaffold: false
+    });
+  });
+
+  it("parses no-scaffold bootstrap arguments", () => {
+    expect(
+      parseBootstrapArgs([
+        "--text",
+        "Создай сервис книг",
+        "--out",
+        "app",
+        "--model",
+        "qwen2.5-coder:14b",
+        "--no-scaffold"
+      ])
+    ).toMatchObject({
+      noScaffold: true
     });
   });
 
@@ -250,7 +267,8 @@ describe("scaffold CLI", () => {
             outDir,
             model: "qwen2.5-coder:14b",
             runValidation: false,
-            autoFix: false
+            autoFix: false,
+            noScaffold: false
           },
           {
             runIntegration: false,

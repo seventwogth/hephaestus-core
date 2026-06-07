@@ -456,6 +456,194 @@ describe("Orchestrator", () => {
     }
   });
 
+  it("rejects no-scaffold bootstrap without a model provider", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
+
+    try {
+      const orchestrator = new Orchestrator(new FileProjectStateStore());
+
+      await expect(
+        orchestrator.bootstrapProjectFromPrompt(projectDir, "Создай сервис книг.", {
+          noScaffold: true,
+          runValidation: false
+        })
+      ).rejects.toThrow("requires a ModelProvider");
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("bootstraps a no-scaffold project with agent-created application files", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
+    const provider: ModelProvider = {
+      async generate(input) {
+        if (input.role === "requirements") {
+          return {
+            role: input.role,
+            summary: "Created SPEC",
+            changedFiles: ["SPEC.json"],
+            updatedFiles: [
+              {
+                path: "SPEC.json",
+                content: `${JSON.stringify({
+                  projectName: "agent-only-books",
+                  description: "Agent-only generated project",
+                  actors: [{ name: "user" }],
+                  features: [
+                    {
+                      id: "books-crud",
+                      title: "Manage books",
+                      description: "Manage books",
+                      priority: "must"
+                    }
+                  ],
+                  entities: [{ name: "Book", fields: ["title"] }],
+                  requiresAuth: true,
+                  requiresDatabase: true,
+                  constraints: [],
+                  acceptanceCriteria: ["Books can be listed"]
+                }, null, 2)}\n`
+              }
+            ],
+            rawOutput: "spec"
+          };
+        }
+
+        if (input.role === "architect") {
+          return {
+            role: input.role,
+            summary: "Created PLAN",
+            changedFiles: ["PLAN.json"],
+            updatedFiles: [
+              {
+                path: "PLAN.json",
+                content: `${JSON.stringify({
+                  projectName: "agent-only-books",
+                  stack: {
+                    frontend: "react-vite-typescript",
+                    backend: "go-chi",
+                    database: "postgresql",
+                    api: "rest-openapi"
+                  },
+                  backendModules: ["books"],
+                  frontendRoutes: ["/"],
+                  databaseEntities: [{ name: "Book", fields: ["title"] }],
+                  endpoints: [
+                    {
+                      method: "GET",
+                      path: "/api/books",
+                      summary: "List books",
+                      authRequired: true
+                    }
+                  ],
+                  validationCommands: ["docker compose config", "cd backend && go test ./...", "cd frontend && npm run build"]
+                }, null, 2)}\n`
+              }
+            ],
+            rawOutput: "plan"
+          };
+        }
+
+        if (input.role === "database") {
+          expect(input.files.map((file) => file.path)).not.toContain("backend/migrations/0001_generated_schema.sql");
+          expect(input.instruction).toContain("No-scaffold");
+          return {
+            role: input.role,
+            summary: "Created database files",
+            changedFiles: ["backend/migrations/0001_generated_schema.sql"],
+            updatedFiles: [
+              {
+                path: "backend/migrations/0001_generated_schema.sql",
+                content: "CREATE TABLE IF NOT EXISTS books (id uuid primary key, title text not null);\n"
+              }
+            ],
+            rawOutput: "database"
+          };
+        }
+
+        if (input.role === "backend") {
+          expect(input.instruction).toContain("No-scaffold");
+          return {
+            role: input.role,
+            summary: "Created backend from scratch",
+            changedFiles: ["backend/go.mod", "backend/cmd/api/main.go"],
+            updatedFiles: [
+              {
+                path: "backend/go.mod",
+                content: "module agent-only-books/backend\n\ngo 1.22\n"
+              },
+              {
+                path: "backend/cmd/api/main.go",
+                content: "package main\n\nfunc main() {}\n"
+              }
+            ],
+            rawOutput: "backend"
+          };
+        }
+
+        if (input.role === "frontend") {
+          expect(input.instruction).toContain("No-scaffold");
+          return {
+            role: input.role,
+            summary: "Created frontend from scratch",
+            changedFiles: ["frontend/package.json", "frontend/src/main.tsx"],
+            updatedFiles: [
+              {
+                path: "frontend/package.json",
+                content: "{\"scripts\":{\"build\":\"node -e \\\"process.exit(0)\\\"\"}}\n"
+              },
+              {
+                path: "frontend/src/main.tsx",
+                content: 'console.log("agent-only-books")\n'
+              }
+            ],
+            rawOutput: "frontend"
+          };
+        }
+
+        if (input.role === "integrator") {
+          expect(input.instruction).toContain("No-scaffold");
+          return {
+            role: input.role,
+            summary: "Created integration files",
+            changedFiles: ["docker-compose.yml", ".env.example"],
+            updatedFiles: [
+              {
+                path: "docker-compose.yml",
+                content: "services:\n  api:\n    build: ./backend\n  frontend:\n    build: ./frontend\n"
+              },
+              {
+                path: ".env.example",
+                content: "DATABASE_URL=postgres://postgres:postgres@db:5432/app\n"
+              }
+            ],
+            rawOutput: "integration"
+          };
+        }
+
+        throw new Error(`unexpected role: ${input.role}`);
+      }
+    };
+
+    try {
+      const orchestrator = new Orchestrator(new FileProjectStateStore(), provider);
+
+      await orchestrator.bootstrapProjectFromPrompt(projectDir, "Создай сервис книг.", {
+        noScaffold: true,
+        runValidation: false,
+        runDocumentation: false
+      });
+
+      await expect(readFile(join(projectDir, "backend/go.mod"), "utf8")).resolves.toContain("agent-only-books");
+      await expect(readFile(join(projectDir, "frontend/src/main.tsx"), "utf8")).resolves.toContain("agent-only-books");
+      await expect(readFile(join(projectDir, "docker-compose.yml"), "utf8")).resolves.toContain("build: ./backend");
+      await expect(readFile(join(projectDir, "backend/internal/http/router.go"), "utf8")).rejects.toThrow();
+      await expect(readFile(join(projectDir, "AGENT_RUNS.jsonl"), "utf8")).resolves.toContain("\"role\":\"integrator\"");
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it("generates Go backend from stored plan", async () => {
     const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
 

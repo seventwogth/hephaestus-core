@@ -73,6 +73,7 @@ export interface FixProjectStageOptions extends ValidateProjectStageOptions {
 }
 
 export interface BootstrapProjectOptions extends FixProjectStageOptions {
+  noScaffold?: boolean;
   runIntegration?: boolean;
   runValidation?: boolean;
   autoFix?: boolean;
@@ -141,15 +142,24 @@ export class Orchestrator {
     requestText: string,
     options: BootstrapProjectOptions = {}
   ): Promise<BootstrapProjectResult> {
+    if (options.noScaffold && !this.modelProvider) {
+      throw new Error("No-scaffold bootstrap requires a ModelProvider");
+    }
+
     const spec = await this.createRequirementsStage(projectDir, requestText);
 
-    await this.scaffoldProject(projectDir, spec);
+    if (options.noScaffold) {
+      await this.initializeProject(projectDir, spec);
+    } else {
+      await this.scaffoldProject(projectDir, spec);
+    }
+
     await this.planProject(projectDir);
-    await this.generateDatabaseStage(projectDir);
-    await this.generateBackendStage(projectDir);
-    await this.generateFrontendStage(projectDir);
+    await this.generateDatabaseStage(projectDir, { noScaffold: options.noScaffold ?? false });
+    await this.generateBackendStage(projectDir, { noScaffold: options.noScaffold ?? false });
+    await this.generateFrontendStage(projectDir, { noScaffold: options.noScaffold ?? false });
     if (options.runIntegration ?? true) {
-      await this.integrateProjectStage(projectDir);
+      await this.integrateProjectStage(projectDir, { noScaffold: options.noScaffold ?? false });
     }
 
     let validationReport: ValidationReport | undefined;
@@ -216,7 +226,10 @@ export class Orchestrator {
     return plan;
   }
 
-  async generateBackendStage(projectDir: string): Promise<void> {
+  async generateBackendStage(
+    projectDir: string,
+    options: { noScaffold?: boolean } = {}
+  ): Promise<void> {
     const plan = await this.store.readPlan(projectDir);
     if (!plan) {
       throw new Error("PLAN.json не найден");
@@ -228,20 +241,24 @@ export class Orchestrator {
     if (this.modelProvider) {
       await this.runAgentStage(projectDir, {
         role: "backend",
-        instruction: buildBackendInstruction(plan),
-        contextFiles: [
-          "SPEC.json",
-          "PLAN.json",
-          "backend/go.mod",
-          "backend/cmd/api/main.go",
-          "backend/internal/http/router.go",
-          "backend/internal/http/generated_routes.go",
-          "backend/internal/platform/database/database.go",
-          "backend/internal/platform/database/migrate.go",
-          "backend/migrations/0001_generated_schema.sql",
-          "README.md"
-        ],
-        writableFiles: ["backend", "docker-compose.yml", "README.md"],
+        instruction: buildBackendInstruction(plan, options),
+        contextFiles: options.noScaffold
+          ? ["REQUEST.md", "SPEC.json", "PLAN.json", "AGENT_RUNS.jsonl"]
+          : [
+              "SPEC.json",
+              "PLAN.json",
+              "backend/go.mod",
+              "backend/cmd/api/main.go",
+              "backend/internal/http/router.go",
+              "backend/internal/http/generated_routes.go",
+              "backend/internal/platform/database/database.go",
+              "backend/internal/platform/database/migrate.go",
+              "backend/migrations/0001_generated_schema.sql",
+              "README.md"
+            ],
+        writableFiles: options.noScaffold
+          ? ["backend", "docker-compose.yml", "README.md", ".env.example", "scripts"]
+          : ["backend", "docker-compose.yml", "README.md"],
         validationCommand: "cd backend && go test ./..."
       });
     } else {
@@ -251,7 +268,10 @@ export class Orchestrator {
     await this.updateTaskStatus(projectDir, "backend", "done");
   }
 
-  async generateDatabaseStage(projectDir: string): Promise<void> {
+  async generateDatabaseStage(
+    projectDir: string,
+    options: { noScaffold?: boolean } = {}
+  ): Promise<void> {
     const plan = await this.store.readPlan(projectDir);
     if (!plan) {
       throw new Error("PLAN.json не найден");
@@ -263,17 +283,21 @@ export class Orchestrator {
     if (this.modelProvider) {
       await this.runAgentStage(projectDir, {
         role: "database",
-        instruction: buildDatabaseInstruction(plan),
-        contextFiles: [
-          "SPEC.json",
-          "PLAN.json",
-          "backend/migrations/0001_generated_schema.sql",
-          "backend/internal/platform/database/database.go",
-          "backend/internal/platform/database/migrate.go",
-          "docker-compose.yml",
-          "README.md"
-        ],
-        writableFiles: ["backend", "docker-compose.yml", "README.md"],
+        instruction: buildDatabaseInstruction(plan, options),
+        contextFiles: options.noScaffold
+          ? ["REQUEST.md", "SPEC.json", "PLAN.json", "AGENT_RUNS.jsonl"]
+          : [
+              "SPEC.json",
+              "PLAN.json",
+              "backend/migrations/0001_generated_schema.sql",
+              "backend/internal/platform/database/database.go",
+              "backend/internal/platform/database/migrate.go",
+              "docker-compose.yml",
+              "README.md"
+            ],
+        writableFiles: options.noScaffold
+          ? ["backend", "docker-compose.yml", "README.md", ".env.example", "scripts"]
+          : ["backend", "docker-compose.yml", "README.md"],
         validationCommand: "cd backend && go test ./..."
       });
     } else {
@@ -283,7 +307,10 @@ export class Orchestrator {
     await this.updateTaskStatus(projectDir, "database", "done");
   }
 
-  async generateFrontendStage(projectDir: string): Promise<void> {
+  async generateFrontendStage(
+    projectDir: string,
+    options: { noScaffold?: boolean } = {}
+  ): Promise<void> {
     const plan = await this.store.readPlan(projectDir);
     if (!plan) {
       throw new Error("PLAN.json не найден");
@@ -295,17 +322,21 @@ export class Orchestrator {
     if (this.modelProvider) {
       await this.runAgentStage(projectDir, {
         role: "frontend",
-        instruction: buildFrontendInstruction(plan),
-        contextFiles: [
-          "SPEC.json",
-          "PLAN.json",
-          "frontend/package.json",
-          "frontend/src/main.tsx",
-          "frontend/src/App.tsx",
-          "frontend/src/styles.css",
-          "README.md"
-        ],
-        writableFiles: ["frontend", "README.md"],
+        instruction: buildFrontendInstruction(plan, options),
+        contextFiles: options.noScaffold
+          ? ["REQUEST.md", "SPEC.json", "PLAN.json", "AGENT_RUNS.jsonl"]
+          : [
+              "SPEC.json",
+              "PLAN.json",
+              "frontend/package.json",
+              "frontend/src/main.tsx",
+              "frontend/src/App.tsx",
+              "frontend/src/styles.css",
+              "README.md"
+            ],
+        writableFiles: options.noScaffold
+          ? ["frontend", "README.md", "docker-compose.yml", ".env.example", "scripts"]
+          : ["frontend", "README.md"],
         validationCommand: "cd frontend && npm run build"
       });
     } else {
@@ -315,7 +346,10 @@ export class Orchestrator {
     await this.updateTaskStatus(projectDir, "frontend", "done");
   }
 
-  async integrateProjectStage(projectDir: string): Promise<void> {
+  async integrateProjectStage(
+    projectDir: string,
+    options: { noScaffold?: boolean } = {}
+  ): Promise<void> {
     const plan = await this.store.readPlan(projectDir);
     const spec = await this.store.readSpec(projectDir);
     if (!plan || !spec) {
@@ -328,20 +362,35 @@ export class Orchestrator {
     if (this.modelProvider) {
       await this.runAgentStage(projectDir, {
         role: "integrator",
-        instruction: buildIntegrationInstruction(plan),
-        contextFiles: [
-          "SPEC.json",
-          "PLAN.json",
-          "docker-compose.yml",
-          "backend/go.mod",
-          "backend/cmd/api/main.go",
-          "backend/internal/http/generated_routes.go",
-          "frontend/package.json",
-          "frontend/src/main.tsx",
-          "frontend/src/App.tsx",
-          "README.md"
-        ],
-        writableFiles: ["backend", "frontend", "docker-compose.yml", "README.md"],
+        instruction: buildIntegrationInstruction(plan, options),
+        contextFiles: options.noScaffold
+          ? [
+              "REQUEST.md",
+              "SPEC.json",
+              "PLAN.json",
+              "backend/go.mod",
+              "backend/cmd/api/main.go",
+              "frontend/package.json",
+              "frontend/src/main.tsx",
+              "docker-compose.yml",
+              "README.md",
+              "AGENT_RUNS.jsonl"
+            ]
+          : [
+              "SPEC.json",
+              "PLAN.json",
+              "docker-compose.yml",
+              "backend/go.mod",
+              "backend/cmd/api/main.go",
+              "backend/internal/http/generated_routes.go",
+              "frontend/package.json",
+              "frontend/src/main.tsx",
+              "frontend/src/App.tsx",
+              "README.md"
+            ],
+        writableFiles: options.noScaffold
+          ? ["backend", "frontend", "docker-compose.yml", "README.md", ".env.example", "scripts"]
+          : ["backend", "frontend", "docker-compose.yml", "README.md"],
         validationCommand: "docker compose config"
       });
     }
@@ -707,37 +756,69 @@ function buildPlanInstruction(): string {
   ].join("\n");
 }
 
-function buildDatabaseInstruction(plan: ProjectPlan): string {
+function buildDatabaseInstruction(
+  plan: ProjectPlan,
+  options: { noScaffold?: boolean } = {}
+): string {
   return [
     `Сгенерируй весь database layer проекта ${plan.projectName} на основе SPEC.json и PLAN.json.`,
+    options.noScaffold
+      ? "No-scaffold режим: шаблона нет. Создай все нужные backend database files с нуля, включая migrations и wiring."
+      : "Работай поверх текущего scaffold.",
     "Нужно обновить PostgreSQL migration files и backend database wiring в разрешенных файлах.",
     "Соблюдай связи между сущностями, индексы, типы полей и совместимость с Go backend.",
     "Возвращай полное содержимое каждого измененного файла."
   ].join("\n");
 }
 
-function buildBackendInstruction(plan: ProjectPlan): string {
+function buildBackendInstruction(
+  plan: ProjectPlan,
+  options: { noScaffold?: boolean } = {}
+): string {
   return [
-    `Сгенерируй весь Go backend проекта ${plan.projectName} на основе SPEC.json, PLAN.json и текущего scaffold.`,
-    "Разрешено переписывать scaffolded backend-файлы полностью.",
+    `Сгенерируй весь Go backend проекта ${plan.projectName} на основе SPEC.json и PLAN.json.`,
+    options.noScaffold
+      ? [
+          "No-scaffold режим: backend директория может быть пустой.",
+          "Создай полный Go module с go.mod, cmd/api/main.go, HTTP router, handlers, storage/database layer, migrations и тестами.",
+          "Backend должен запускаться в Docker и проходить `go test ./...`."
+        ].join(" ")
+      : "Разрешено переписывать scaffolded backend-файлы полностью.",
     "Нужны рабочие REST handlers, routing, models, storage/repository integration и startup wiring.",
     "Сохраняй совместимость с database migrations и docker-compose.",
     "Возвращай полное содержимое каждого измененного файла."
   ].join("\n");
 }
 
-function buildFrontendInstruction(plan: ProjectPlan): string {
+function buildFrontendInstruction(
+  plan: ProjectPlan,
+  options: { noScaffold?: boolean } = {}
+): string {
   return [
-    `Сгенерируй весь React frontend проекта ${plan.projectName} на основе SPEC.json, PLAN.json и текущего scaffold.`,
-    "Разрешено переписывать scaffolded frontend-файлы полностью.",
+    `Сгенерируй весь React frontend проекта ${plan.projectName} на основе SPEC.json и PLAN.json.`,
+    options.noScaffold
+      ? [
+          "No-scaffold режим: frontend директория может быть пустой.",
+          "Создай полный Vite React TypeScript project с package.json, tsconfig, index.html, src files, styles и тестами.",
+          "Frontend должен собираться командой `npm run build`."
+        ].join(" ")
+      : "Разрешено переписывать scaffolded frontend-файлы полностью.",
     "Сделай интерфейс под основные user flows и связанные ресурсы из плана.",
-    "Используй существующий Vite/TypeScript scaffold и возвращай полное содержимое каждого измененного файла."
+    options.noScaffold
+      ? "Не рассчитывай на заранее созданные файлы. Возвращай полное содержимое каждого созданного файла."
+      : "Используй существующий Vite/TypeScript scaffold и возвращай полное содержимое каждого измененного файла."
   ].join("\n");
 }
 
-function buildIntegrationInstruction(plan: ProjectPlan): string {
+function buildIntegrationInstruction(
+  plan: ProjectPlan,
+  options: { noScaffold?: boolean } = {}
+): string {
   return [
     `Интегрируй backend, frontend и docker-compose проекта ${plan.projectName} в единый рабочий контур.`,
+    options.noScaffold
+      ? "No-scaffold режим: создай или исправь docker-compose.yml, Dockerfile files, .env.example и scripts с нуля."
+      : "Работай поверх существующего scaffold.",
     "Проверь согласованность API routes, переменных окружения, URL, портов и docker-compose wiring.",
     "Исправляй только разрешенные файлы и возвращай их полное содержимое."
   ].join("\n");
