@@ -72,8 +72,11 @@ escape, запрещает hardlinked files, ограничивает разме
 Sandbox validation summary записывается в `GENERATION_REPORT.json`, включая
 failed checks, timeouts, signals и output truncation. Поведение покрыто тестами
 на path traversal, symlink, hardlink, timeout, output limit, cleanup, command
-allowlist edge cases и generation report failure summary. Не закрыто:
-container workspace, CPU/memory/disk/process limits и network policy.
+allowlist edge cases, generation report failure summary и Docker runner command
+interface. Docker runner уже умеет формировать запуск с bind-mounted workspace,
+controlled env, network mode и базовыми CPU/memory/pids параметрами. Не закрыто:
+production validation image, включение container validation в worker, disk
+limits и network policy по стадиям.
 
 Работы:
 

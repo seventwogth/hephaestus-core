@@ -1,6 +1,6 @@
 import { access, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { type CommandResult, ProjectSandbox } from "@hephaestus/project-sandbox";
+import { type CommandResult, ProjectSandbox, type SandboxRunnerOptions } from "@hephaestus/project-sandbox";
 
 export interface ValidationCheck {
   id: string;
@@ -72,6 +72,7 @@ export interface ValidateProjectOptions {
   projectDir: string;
   checks?: ValidationCheck[];
   timeoutMs?: number;
+  runner?: SandboxRunnerOptions;
   writeReview?: boolean;
 }
 
@@ -99,7 +100,8 @@ export async function validateGeneratedWebApp(
   const sandbox = new ProjectSandbox({
     rootDir: options.projectDir,
     allowedCommands: Array.from(new Set(checks.map((check) => check.command))),
-    timeoutMs: options.timeoutMs
+    timeoutMs: options.timeoutMs,
+    runner: options.runner
   });
 
   const results: ValidationCheckResult[] = [];
@@ -157,6 +159,7 @@ export function renderReviewMarkdown(report: ValidationReport): string {
     lines.push(`- Код выхода: ${result.commandResult.exitCode ?? "нет"}`);
     lines.push(`- Сигнал: ${result.commandResult.signal ?? "нет"}`);
     lines.push(`- Таймаут: ${result.commandResult.timedOut ? "да" : "нет"}`);
+    lines.push(`- Runner: ${result.commandResult.runner}`);
     appendOutput(lines, "stdout", result.commandResult.stdout, result.commandResult.stdoutTruncated);
     appendOutput(lines, "stderr", result.commandResult.stderr, result.commandResult.stderrTruncated);
     lines.push("");

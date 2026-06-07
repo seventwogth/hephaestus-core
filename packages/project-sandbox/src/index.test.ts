@@ -2,7 +2,7 @@ import { access, chmod, link, mkdir, mkdtemp, rm, symlink, writeFile } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { ProjectSandbox } from "./index.js";
+import { buildCommandSpec, ProjectSandbox } from "./index.js";
 
 describe("ProjectSandbox", () => {
   it("reads and writes only inside the project root", async () => {
@@ -189,5 +189,56 @@ describe("ProjectSandbox", () => {
     } finally {
       await rm(rootDir, { recursive: true, force: true });
     }
+  });
+
+  it("builds a docker command spec with mounted workspace and resource limits", () => {
+    const spec = buildCommandSpec({
+      runner: {
+        type: "docker",
+        image: "hephaestus/validation:latest",
+        network: "none",
+        cpus: "1.5",
+        memory: "512m",
+        pidsLimit: 128
+      },
+      rootDir: "/tmp/project",
+      command: "npm",
+      args: ["test"],
+      cwd: "frontend",
+      env: {
+        HOME: "/workspace/.hephaestus-home",
+        PATH: "/usr/bin",
+        HEPHAESTUS_EXPLICIT_ENV: "visible"
+      }
+    });
+
+    expect(spec.runner).toBe("docker");
+    expect(spec.command).toBe("docker");
+    expect(spec.args).toEqual([
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--mount",
+      "type=bind,src=/tmp/project,dst=/workspace",
+      "-w",
+      "/workspace/frontend",
+      "--cpus",
+      "1.5",
+      "--memory",
+      "512m",
+      "--pids-limit",
+      "128",
+      "--env",
+      "HEPHAESTUS_EXPLICIT_ENV=visible",
+      "--env",
+      "HOME=/workspace/.hephaestus-home",
+      "--env",
+      "PATH=/usr/bin",
+      "hephaestus/validation:latest",
+      "npm",
+      "test"
+    ]);
+    expect(spec.hostEnv).not.toHaveProperty("HEPHAESTUS_EXPLICIT_ENV");
   });
 });

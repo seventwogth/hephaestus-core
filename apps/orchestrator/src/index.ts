@@ -13,7 +13,7 @@ import {
   generateGoBackend,
   generateReactFrontend
 } from "@hephaestus/project-generator";
-import { ProjectSandbox } from "@hephaestus/project-sandbox";
+import { ProjectSandbox, type SandboxRunnerOptions } from "@hephaestus/project-sandbox";
 import {
   type ValidationCheck,
   type ValidationReport,
@@ -71,6 +71,7 @@ interface AgentGenerationStageOptions {
 export interface ValidateProjectStageOptions {
   checks?: ValidationCheck[];
   timeoutMs?: number;
+  sandboxRunner?: SandboxRunnerOptions;
 }
 
 export interface FixProjectStageOptions extends ValidateProjectStageOptions {
@@ -738,7 +739,8 @@ export class Orchestrator {
     const report = await validateGeneratedWebApp({
       projectDir,
       checks: options.checks,
-      timeoutMs: options.timeoutMs
+      timeoutMs: options.timeoutMs,
+      runner: options.sandboxRunner
     });
 
     await this.updateTaskStatus(projectDir, "testing", report.passed ? "done" : "failed");
@@ -782,7 +784,8 @@ export class Orchestrator {
       latestReport = await validateGeneratedWebApp({
         projectDir,
         checks: options.checks,
-        timeoutMs: options.timeoutMs
+        timeoutMs: options.timeoutMs,
+        runner: options.sandboxRunner
       });
 
       if (latestReport.passed) {

@@ -2,6 +2,22 @@ import { spawn } from "node:child_process";
 import { chmod, mkdir, readFile, readdir, realpath, lstat, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, resolve, relative, join } from "node:path";
 
+export type SandboxRunnerOptions =
+  | { type?: "host" }
+  | DockerSandboxRunnerOptions;
+
+export interface DockerSandboxRunnerOptions {
+  type: "docker";
+  image: string;
+  dockerCommand?: string;
+  workspaceMount?: string;
+  network?: string;
+  user?: string;
+  cpus?: string;
+  memory?: string;
+  pidsLimit?: number;
+}
+
 export interface CommandResult {
   command: string;
   args: string[];
@@ -13,6 +29,7 @@ export interface CommandResult {
   stdoutTruncated: boolean;
   stderrTruncated: boolean;
   signal: NodeJS.Signals | null;
+  runner: "host" | "docker";
 }
 
 export interface SandboxOptions {
@@ -23,6 +40,7 @@ export interface SandboxOptions {
   maxOutputBytes?: number;
   env?: Record<string, string | undefined>;
   inheritEnv?: string[];
+  runner?: SandboxRunnerOptions;
 }
 
 export class ProjectSandbox {
@@ -33,6 +51,7 @@ export class ProjectSandbox {
   private readonly maxOutputBytes: number;
   private readonly envOverrides: Record<string, string | undefined>;
   private readonly inheritedEnvNames: string[];
+  private readonly runner: SandboxRunnerOptions;
 
   constructor(options: SandboxOptions) {
     this.rootDir = resolve(options.rootDir);
@@ -42,6 +61,7 @@ export class ProjectSandbox {
     this.maxOutputBytes = Math.max(0, options.maxOutputBytes ?? 1_048_576);
     this.envOverrides = options.env ?? {};
     this.inheritedEnvNames = options.inheritEnv ?? [];
+    this.runner = options.runner ?? { type: "host" };
   }
 
   async readText(path: string): Promise<string> {
@@ -64,14 +84,22 @@ export class ProjectSandbox {
 
     const workingDirectory = this.resolveInsideRoot(cwd);
     await this.assertSafeWorkingDirectory(workingDirectory, cwd);
-    const env = await this.buildCommandEnv();
+    const env = await this.buildCommandEnv(this.runnerType());
+    const commandSpec = buildCommandSpec({
+      runner: this.runner,
+      rootDir: this.rootDir,
+      command,
+      args,
+      cwd,
+      env
+    });
 
     return new Promise((resolvePromise, reject) => {
-      const child = spawn(command, args, {
-        cwd: workingDirectory,
+      const child = spawn(commandSpec.command, commandSpec.args, {
+        cwd: commandSpec.hostCwd ?? workingDirectory,
         shell: false,
         detached: process.platform !== "win32",
-        env
+        env: commandSpec.hostEnv
       });
 
       let stdout = createLimitedOutputBuffer(this.maxOutputBytes);
@@ -124,7 +152,8 @@ export class ProjectSandbox {
             timedOut,
             stdoutTruncated: stdout.truncated,
             stderrTruncated: stderr.truncated,
-            signal
+            signal,
+            runner: commandSpec.runner
           });
         }
       });
@@ -149,15 +178,18 @@ export class ProjectSandbox {
     throw new Error(`Path escapes project root: ${path}`);
   }
 
-  private async buildCommandEnv(): Promise<Record<string, string>> {
-    const { homeDir, tmpDir, cacheDir } = this.getRuntimeDirMap();
+  private async buildCommandEnv(runner: "host" | "docker"): Promise<Record<string, string>> {
+    const hostRuntimeDirs = this.getRuntimeDirMap(this.rootDir);
+    const envRuntimeDirs = runner === "docker"
+      ? this.getRuntimeDirMap(DEFAULT_CONTAINER_WORKSPACE)
+      : hostRuntimeDirs;
     const env: Record<string, string> = {};
 
-    await mkdir(homeDir, { recursive: true });
-    await mkdir(tmpDir, { recursive: true });
-    await mkdir(join(cacheDir, "npm"), { recursive: true });
-    await mkdir(join(cacheDir, "go-build"), { recursive: true });
-    await mkdir(join(cacheDir, "go-mod"), { recursive: true });
+    await mkdir(hostRuntimeDirs.homeDir, { recursive: true });
+    await mkdir(hostRuntimeDirs.tmpDir, { recursive: true });
+    await mkdir(join(hostRuntimeDirs.cacheDir, "npm"), { recursive: true });
+    await mkdir(join(hostRuntimeDirs.cacheDir, "go-build"), { recursive: true });
+    await mkdir(join(hostRuntimeDirs.cacheDir, "go-mod"), { recursive: true });
 
     copyEnvIfSet(env, "PATH");
     copyEnvIfSet(env, "LANG");
@@ -168,11 +200,11 @@ export class ProjectSandbox {
       copyEnvIfSet(env, name);
     }
 
-    env.HOME = homeDir;
-    env.TMPDIR = tmpDir;
-    env.npm_config_cache = join(cacheDir, "npm");
-    env.GOCACHE = join(cacheDir, "go-build");
-    env.GOMODCACHE = join(cacheDir, "go-mod");
+    env.HOME = envRuntimeDirs.homeDir;
+    env.TMPDIR = envRuntimeDirs.tmpDir;
+    env.npm_config_cache = join(envRuntimeDirs.cacheDir, "npm");
+    env.GOCACHE = join(envRuntimeDirs.cacheDir, "go-build");
+    env.GOMODCACHE = join(envRuntimeDirs.cacheDir, "go-mod");
     env.CI = process.env.CI ?? "true";
 
     for (const [name, value] of Object.entries(this.envOverrides)) {
@@ -186,16 +218,20 @@ export class ProjectSandbox {
     return env;
   }
 
-  private getRuntimeDirMap(): { homeDir: string; tmpDir: string; cacheDir: string } {
+  private runnerType(): "host" | "docker" {
+    return this.runner.type === "docker" ? "docker" : "host";
+  }
+
+  private getRuntimeDirMap(rootDir: string): { homeDir: string; tmpDir: string; cacheDir: string } {
     return {
-      homeDir: join(this.rootDir, ".hephaestus-home"),
-      tmpDir: join(this.rootDir, ".hephaestus-tmp"),
-      cacheDir: join(this.rootDir, ".hephaestus-cache")
+      homeDir: join(rootDir, ".hephaestus-home"),
+      tmpDir: join(rootDir, ".hephaestus-tmp"),
+      cacheDir: join(rootDir, ".hephaestus-cache")
     };
   }
 
   private getRuntimeDirs(): string[] {
-    const { homeDir, tmpDir, cacheDir } = this.getRuntimeDirMap();
+    const { homeDir, tmpDir, cacheDir } = this.getRuntimeDirMap(this.rootDir);
     return [homeDir, tmpDir, cacheDir];
   }
 
@@ -297,11 +333,99 @@ export class ProjectSandbox {
   }
 }
 
+export interface CommandSpecInput {
+  runner: SandboxRunnerOptions;
+  rootDir: string;
+  command: string;
+  args: string[];
+  cwd: string;
+  env: Record<string, string>;
+}
+
+export interface CommandSpec {
+  command: string;
+  args: string[];
+  hostCwd?: string;
+  hostEnv: Record<string, string>;
+  runner: "host" | "docker";
+}
+
+export function buildCommandSpec(input: CommandSpecInput): CommandSpec {
+  if (input.runner.type !== "docker") {
+    return {
+      command: input.command,
+      args: input.args,
+      hostCwd: resolve(input.rootDir, input.cwd),
+      hostEnv: input.env,
+      runner: "host"
+    };
+  }
+
+  const workspaceMount = input.runner.workspaceMount ?? DEFAULT_CONTAINER_WORKSPACE;
+  const containerCwd = toContainerPath(workspaceMount, input.cwd);
+  const dockerArgs = [
+    "run",
+    "--rm",
+    "--network",
+    input.runner.network ?? "none",
+    "--mount",
+    `type=bind,src=${input.rootDir},dst=${workspaceMount}`,
+    "-w",
+    containerCwd
+  ];
+
+  if (input.runner.user) {
+    dockerArgs.push("--user", input.runner.user);
+  }
+
+  if (input.runner.cpus) {
+    dockerArgs.push("--cpus", input.runner.cpus);
+  }
+
+  if (input.runner.memory) {
+    dockerArgs.push("--memory", input.runner.memory);
+  }
+
+  if (input.runner.pidsLimit !== undefined) {
+    dockerArgs.push("--pids-limit", String(input.runner.pidsLimit));
+  }
+
+  for (const [name, value] of Object.entries(input.env).sort(([left], [right]) => left.localeCompare(right))) {
+    dockerArgs.push("--env", `${name}=${value}`);
+  }
+
+  dockerArgs.push(input.runner.image, input.command, ...input.args);
+
+  return {
+    command: input.runner.dockerCommand ?? "docker",
+    args: dockerArgs,
+    hostCwd: input.rootDir,
+    hostEnv: buildDockerHostEnv(),
+    runner: "docker"
+  };
+}
+
+const DEFAULT_CONTAINER_WORKSPACE = "/workspace";
+
 function copyEnvIfSet(env: Record<string, string>, name: string): void {
   const value = process.env[name];
   if (value !== undefined) {
     env[name] = value;
   }
+}
+
+function buildDockerHostEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  copyEnvIfSet(env, "PATH");
+  copyEnvIfSet(env, "DOCKER_HOST");
+  copyEnvIfSet(env, "DOCKER_CONTEXT");
+  copyEnvIfSet(env, "DOCKER_CONFIG");
+  return env;
+}
+
+function toContainerPath(workspaceMount: string, path: string): string {
+  const normalizedPath = path === "." ? "" : path.replace(/^\/+/, "");
+  return normalizedPath ? join(workspaceMount, normalizedPath) : workspaceMount;
 }
 
 function createLimitedOutputBuffer(maxBytes: number): {

@@ -150,7 +150,8 @@ describe("Orchestrator", () => {
             timedOut: true,
             stdoutTruncated: true,
             stderrTruncated: false,
-            signal: "SIGKILL"
+            signal: "SIGKILL",
+            runner: "host"
           }
         }
       ]

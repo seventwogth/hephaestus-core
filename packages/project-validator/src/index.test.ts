@@ -67,7 +67,8 @@ describe("project validator", () => {
             timedOut: false,
             stdoutTruncated: false,
             stderrTruncated: false,
-            signal: null
+            signal: null,
+            runner: "host"
           }
         }
       ]
