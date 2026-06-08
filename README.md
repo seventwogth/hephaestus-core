@@ -366,6 +366,10 @@ TELEGRAM_BOT_TOKEN=... npm run telegram-bot
 - `HEPHAESTUS_OLLAMA_BASE_URL` — URL локального Ollama API, по умолчанию `http://127.0.0.1:11434`
 - `HEPHAESTUS_OLLAMA_TIMEOUT_MS` — таймаут одного agent run для Ollama
 - `HEPHAESTUS_JOB_POLL_INTERVAL_MS` — интервал опроса очереди worker в миллисекундах
+- `HEPHAESTUS_JOB_STORE` — backend очереди `file` или `postgres`; по умолчанию `file`, но при наличии `HEPHAESTUS_JOB_DATABASE_URL` выбирается `postgres`
+- `HEPHAESTUS_JOB_DATABASE_URL` — Postgres connection string для durable queue backend
+- `HEPHAESTUS_JOB_TABLE` — имя таблицы Postgres queue, по умолчанию `hephaestus_project_jobs`
+- `HEPHAESTUS_JOB_RUN_MIGRATIONS` — запускать встроенную миграцию Postgres queue при старте, по умолчанию `true`
 - `HEPHAESTUS_NO_SCAFFOLD` — включить no-scaffold bootstrap для Telegram jobs
 
 После выбора модели бот сохраняет её в `MODEL_SELECTION.json` внутри созданного

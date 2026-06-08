@@ -7,12 +7,15 @@ import {
   FileTelegramSessionStore,
   HephaestusTelegramBot,
   LocalProjectBootstrapper,
+  PostgresProjectJobStore,
   ProjectJobRunner,
+  StoredProjectJobQueue,
   TelegramHttpApi,
   TelegramPollingRuntime,
   TelegramWorkerRuntime,
   createModelProviderForOption,
-  parseAvailableModels
+  parseAvailableModels,
+  type ProjectJobQueue
 } from "./index.js";
 
 async function main(): Promise<void> {
@@ -29,7 +32,7 @@ async function main(): Promise<void> {
   const noScaffold = parseBoolean(process.env.HEPHAESTUS_NO_SCAFFOLD);
   const api = new TelegramHttpApi({ token });
   const sessionStore = new FileTelegramSessionStore(joinPath(stateDir, "sessions.json"));
-  const jobQueue = new FileProjectJobQueue(joinPath(stateDir, "jobs.json"));
+  const jobQueue = await createJobQueue(stateDir);
   const bootstrapper = new LocalProjectBootstrapper({
     outputRoot: projectsDir,
     createModelProvider: (model) => createModelProviderForOption(model),
@@ -65,6 +68,40 @@ function joinPath(base: string, suffix: string): string {
   return resolve(base, suffix);
 }
 
+async function createJobQueue(stateDir: string): Promise<ProjectJobQueue> {
+  const backend = parseJobStoreBackend(process.env.HEPHAESTUS_JOB_STORE, process.env.HEPHAESTUS_JOB_DATABASE_URL);
+  if (backend === "file") {
+    return new FileProjectJobQueue(joinPath(stateDir, "jobs.json"));
+  }
+
+  const connectionString = process.env.HEPHAESTUS_JOB_DATABASE_URL;
+  if (!connectionString) {
+    throw new Error("HEPHAESTUS_JOB_DATABASE_URL is required when HEPHAESTUS_JOB_STORE=postgres");
+  }
+
+  const store = new PostgresProjectJobStore({
+    connectionString,
+    tableName: process.env.HEPHAESTUS_JOB_TABLE
+  });
+  if (parseBoolean(process.env.HEPHAESTUS_JOB_RUN_MIGRATIONS, true)) {
+    await store.migrate();
+  }
+
+  return new StoredProjectJobQueue(store);
+}
+
+function parseJobStoreBackend(
+  rawValue: string | undefined,
+  databaseUrl: string | undefined
+): "file" | "postgres" {
+  const value = (rawValue ?? (databaseUrl ? "postgres" : "file")).trim().toLowerCase();
+  if (value === "file" || value === "postgres") {
+    return value;
+  }
+
+  throw new Error(`Unsupported HEPHAESTUS_JOB_STORE value: ${rawValue}`);
+}
+
 function parseBotMode(rawValue: string | undefined): "poll" | "worker" | "all" {
   const value = (rawValue ?? "all").trim().toLowerCase();
   if (value === "poll" || value === "worker" || value === "all") {
@@ -87,9 +124,9 @@ function parseInterval(rawValue: string | undefined): number {
   return parsed;
 }
 
-function parseBoolean(rawValue: string | undefined): boolean {
+function parseBoolean(rawValue: string | undefined, fallback = false): boolean {
   if (!rawValue) {
-    return false;
+    return fallback;
   }
 
   const value = rawValue.trim().toLowerCase();

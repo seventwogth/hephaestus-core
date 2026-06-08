@@ -113,19 +113,21 @@ Acceptance gate:
 Цель: заменить single-node file queue на production-grade lifecycle.
 
 Статус: начато. Job lifecycle отделен от storage backend через
-`ProjectJobStore` и `StoredProjectJobQueue`: текущие in-memory/file store
-остаются local/dev backend, а Postgres/Redis backend может реализовать тот же
-store contract. File store усилен production lifecycle полями: lease recovery
-increments attempts, retry сохраняет lineage через `rootJobId` и
+`ProjectJobStore` и `StoredProjectJobQueue`: in-memory/file store остаются
+local/dev backend, а Postgres выбран как durable backend. Добавлен
+`PostgresProjectJobStore` с встроенной миграцией, partial unique index для
+`idempotencyKey`, lease recovery/dead-letter updates и transactional claim через
+`FOR UPDATE SKIP LOCKED`. File store усилен production lifecycle полями: lease
+recovery increments attempts, retry сохраняет lineage через `rootJobId` и
 `retryOfJobId`, enqueue поддерживает `idempotencyKey`, а repeated lease
 expiration переводит job в terminal `dead_letter` с диагностикой. Не закрыто:
-выбор и реализация durable backend уровня Postgres/Redis, а также полноценные
-ownership/retention policies.
+integration smoke с живым Postgres, полноценные ownership/retention policies и
+опциональный Redis/lightweight backend.
 
 Работы:
 
-- выбрать durable backend: Postgres как основной вариант, Redis как возможный
-  lightweight вариант;
+- поддерживать выбранный durable backend: Postgres как основной вариант, Redis
+  как возможный lightweight вариант позже;
 - добавить leases, renewals, idempotency keys и dead-letter jobs;
 - хранить job state machine: pending, claimed, running, cancelling, cancelled,
   failed, completed, expired;
@@ -133,6 +135,7 @@ ownership/retention policies.
 - добавить per-user/project ownership;
 - добавить retention policy для completed/failed jobs и generated artifacts;
 - оставить file queue как local/dev backend за общим интерфейсом.
+- добавить integration smoke для Postgres backend в CI или release gate.
 
 Acceptance gate:
 

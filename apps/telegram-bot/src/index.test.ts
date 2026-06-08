@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import type { QueryResult, QueryResultRow } from "pg";
 import { describe, expect, it } from "vitest";
 import {
   createModelProviderForOption,
@@ -14,15 +15,114 @@ import {
   InMemoryTelegramSessionStore,
   LocalProjectBootstrapper,
   parseAvailableModels,
+  PostgresProjectJobStore,
   ProjectJobRunner,
   readSelectedModel,
   StoredProjectJobQueue,
   TelegramPollingRuntime,
   TelegramWorkerRuntime,
+  type ModelOption,
+  type PostgresProjectJobClient,
+  type PostgresProjectJobPool,
   type ProjectBootstrapper,
+  type ProjectJob,
   type ProjectJobQueue,
   type TelegramApi
 } from "./index.js";
+
+interface RecordedQuery {
+  text: string;
+  values?: unknown[];
+}
+
+interface RecordedResult {
+  match: string;
+  rows: Record<string, unknown>[];
+}
+
+class RecordingPostgresClient implements PostgresProjectJobClient {
+  readonly queries: RecordedQuery[] = [];
+  released = false;
+
+  constructor(private readonly results: RecordedResult[]) {}
+
+  async query<R extends QueryResultRow = QueryResultRow>(text: string, values?: unknown[]): Promise<QueryResult<R>> {
+    this.queries.push({ text, values });
+    return recordedQueryResult(this.results.find((result) => text.includes(result.match))?.rows ?? []);
+  }
+
+  release(): void {
+    this.released = true;
+  }
+}
+
+class RecordingPostgresPool implements PostgresProjectJobPool {
+  readonly queries: RecordedQuery[] = [];
+  readonly client: RecordingPostgresClient;
+
+  constructor(private readonly results: RecordedResult[] = []) {
+    this.client = new RecordingPostgresClient(results);
+  }
+
+  async query<R extends QueryResultRow = QueryResultRow>(text: string, values?: unknown[]): Promise<QueryResult<R>> {
+    this.queries.push({ text, values });
+    return recordedQueryResult(this.results.find((result) => text.includes(result.match))?.rows ?? []);
+  }
+
+  async connect(): Promise<PostgresProjectJobClient> {
+    return this.client;
+  }
+}
+
+function projectJob(overrides: Partial<ProjectJob> = {}): ProjectJob {
+  return {
+    id: "job-1",
+    chatId: 100,
+    description: "Создай сервис книг",
+    selectedModel: { id: "quality", label: "Quality" },
+    status: "pending",
+    queuedAt: "2026-01-01T00:00:00.000Z",
+    attempt: 1,
+    maxAttempts: 3,
+    rootJobId: "job-1",
+    ...overrides
+  };
+}
+
+function jobRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: "job-1",
+    chat_id: 100,
+    description: "Создай сервис книг",
+    selected_model: { id: "quality", label: "Quality" } satisfies ModelOption,
+    status: "pending",
+    queued_at: "2026-01-01T00:00:00.000Z",
+    attempt: 1,
+    max_attempts: 3,
+    root_job_id: "job-1",
+    started_at: null,
+    finished_at: null,
+    lease_expires_at: null,
+    cancelled_at: null,
+    dead_letter_at: null,
+    retry_of_job_id: null,
+    idempotency_key: null,
+    project_dir: null,
+    project_name: null,
+    error: null,
+    ...overrides
+  };
+}
+
+function recordedQueryResult<R extends QueryResultRow>(rows: Record<string, unknown>[]): QueryResult<R> {
+  return {
+    command: "SELECT",
+    rowCount: rows.length,
+    oid: 0,
+    fields: [],
+    rows: rows as R[]
+  };
+}
 
 describe("parseAvailableModels", () => {
   it("parses configured model list", () => {
@@ -349,6 +449,87 @@ describe("persistent Telegram bot state", () => {
     } finally {
       await rm(rootDir, { recursive: true, force: true });
     }
+  });
+
+  it("creates the Postgres job table and lifecycle indexes", async () => {
+    const pool = new RecordingPostgresPool();
+    const store = new PostgresProjectJobStore({
+      pool,
+      tableName: "telegram.project_jobs"
+    });
+
+    await store.migrate();
+
+    expect(pool.queries[0]?.text).toContain("CREATE TABLE IF NOT EXISTS \"telegram\".\"project_jobs\"");
+    expect(pool.queries[0]?.text).toContain("CREATE UNIQUE INDEX IF NOT EXISTS hephaestus_project_jobs_idempotency_key_idx");
+    expect(pool.queries[0]?.text).toContain("WHERE idempotency_key IS NOT NULL");
+    expect(pool.queries[0]?.text).toContain("hephaestus_project_jobs_lease_idx");
+  });
+
+  it("rejects unsafe Postgres table names", () => {
+    expect(() => new PostgresProjectJobStore({
+      pool: new RecordingPostgresPool(),
+      tableName: "project_jobs; drop table project_jobs"
+    })).toThrow("Invalid SQL identifier");
+  });
+
+  it("inserts Postgres jobs through an idempotent key conflict target", async () => {
+    const selectedModel = { id: "quality", label: "Quality" };
+    const pool = new RecordingPostgresPool([
+      {
+        match: "INSERT INTO",
+        rows: [jobRow({
+          id: "job-1",
+          selected_model: selectedModel,
+          idempotency_key: "chat-100-message-42"
+        })]
+      }
+    ]);
+    const store = new PostgresProjectJobStore({ pool });
+
+    const inserted = await store.insert(projectJob({
+      id: "job-1",
+      selectedModel,
+      idempotencyKey: "chat-100-message-42"
+    }));
+
+    expect(inserted).toMatchObject({
+      id: "job-1",
+      selectedModel,
+      idempotencyKey: "chat-100-message-42"
+    });
+    expect(pool.queries[0]?.text).toContain("ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL");
+    expect(pool.queries[0]?.values?.[3]).toBe(JSON.stringify(selectedModel));
+  });
+
+  it("claims Postgres jobs transactionally with lease recovery and skip-locked selection", async () => {
+    const pool = new RecordingPostgresPool([
+      {
+        match: "RETURNING jobs.*",
+        rows: [jobRow({
+          id: "job-1",
+          status: "running",
+          started_at: "2026-01-01T00:00:00.000Z",
+          lease_expires_at: "2026-01-01T00:10:00.000Z"
+        })]
+      }
+    ]);
+    const store = new PostgresProjectJobStore({ pool });
+
+    const claimed = await store.claimNext(new Date("2026-01-01T00:00:00.000Z"), 600_000);
+
+    expect(claimed).toMatchObject({
+      id: "job-1",
+      status: "running",
+      leaseExpiresAt: "2026-01-01T00:10:00.000Z"
+    });
+    expect(pool.client.queries.map((query) => query.text.trim())).toEqual([
+      "BEGIN",
+      expect.stringContaining("status = 'dead_letter'"),
+      expect.stringContaining("attempt = attempt + 1"),
+      expect.stringContaining("FOR UPDATE SKIP LOCKED"),
+      "COMMIT"
+    ]);
   });
 
   it("recovers expired running jobs from the file queue", async () => {

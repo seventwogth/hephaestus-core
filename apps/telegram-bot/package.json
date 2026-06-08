@@ -16,9 +16,11 @@
   "dependencies": {
     "@hephaestus/agents": "file:../../packages/agents",
     "@hephaestus/hermes-adapter": "file:../../packages/hermes-adapter",
-    "@hephaestus/orchestrator": "file:../orchestrator"
+    "@hephaestus/orchestrator": "file:../orchestrator",
+    "pg": "^8.21.0"
   },
   "devDependencies": {
+    "@types/pg": "^8.20.0",
     "typescript": "^5.8.0",
     "vitest": "^4.1.8"
   }

@@ -47,5 +47,8 @@ GitHub Actions запускает production-readiness baseline на Ubuntu:
   результат в `ARTIFACT_RETENTION.json` и `GENERATION_REPORT.json`.
 - Telegram job lifecycle работает через `ProjectJobStore`; file store остается
   local/dev backend и хранит leases, attempts, retry lineage, optional
-  idempotency keys и `dead_letter` status в `jobs.json`. Production backend
-  должен реализовать тот же store contract поверх Postgres/Redis.
+  idempotency keys и `dead_letter` status в `jobs.json`.
+- Durable Telegram queue включается через `HEPHAESTUS_JOB_STORE=postgres` или
+  `HEPHAESTUS_JOB_DATABASE_URL`; `PostgresProjectJobStore` создает таблицу
+  `HEPHAESTUS_JOB_TABLE` при `HEPHAESTUS_JOB_RUN_MIGRATIONS=true` и использует
+  transactional claim через `FOR UPDATE SKIP LOCKED`.

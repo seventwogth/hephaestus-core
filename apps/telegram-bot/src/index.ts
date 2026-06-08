@@ -12,6 +12,7 @@ import {
   FileProjectStateStore,
   Orchestrator
 } from "@hephaestus/orchestrator";
+import { Pool, type QueryResult, type QueryResultRow } from "pg";
 
 export interface ModelOption {
   id: string;
@@ -169,6 +170,23 @@ export interface ProjectJobStore {
   retry(jobId: string, chatId: number, createRetryJob: (job: ProjectJob) => ProjectJob): Promise<ProjectJob>;
   cancel(jobId: string, chatId: number, finishedAt: string): Promise<ProjectJob>;
   update(jobId: string, patch: Partial<ProjectJob>): Promise<ProjectJob>;
+}
+
+export interface PostgresProjectJobPool {
+  query<R extends QueryResultRow = QueryResultRow>(text: string, values?: unknown[]): Promise<QueryResult<R>>;
+  connect(): Promise<PostgresProjectJobClient>;
+  end?(): Promise<void>;
+}
+
+export interface PostgresProjectJobClient {
+  query<R extends QueryResultRow = QueryResultRow>(text: string, values?: unknown[]): Promise<QueryResult<R>>;
+  release(): void;
+}
+
+export interface PostgresProjectJobStoreOptions {
+  connectionString?: string;
+  pool?: PostgresProjectJobPool;
+  tableName?: string;
 }
 
 export class StoredProjectJobQueue implements ProjectJobQueue {
@@ -484,6 +502,367 @@ export class FileProjectJobQueue extends StoredProjectJobQueue {
         now: options.now
       }
     );
+  }
+}
+
+interface ProjectJobRow extends QueryResultRow {
+  id: string;
+  chat_id: string | number;
+  description: string;
+  selected_model: ModelOption | string;
+  status: ProjectJobStatus;
+  queued_at: Date | string;
+  attempt: number;
+  max_attempts: number;
+  root_job_id: string;
+  started_at: Date | string | null;
+  finished_at: Date | string | null;
+  lease_expires_at: Date | string | null;
+  cancelled_at: Date | string | null;
+  dead_letter_at: Date | string | null;
+  retry_of_job_id: string | null;
+  idempotency_key: string | null;
+  project_dir: string | null;
+  project_name: string | null;
+  error: string | null;
+}
+
+export class PostgresProjectJobStore implements ProjectJobStore {
+  private readonly pool: PostgresProjectJobPool;
+  private readonly tableName: string;
+  private readonly ownsPool: boolean;
+
+  constructor(options: PostgresProjectJobStoreOptions) {
+    if (!options.pool && !options.connectionString) {
+      throw new Error("PostgresProjectJobStore requires pool or connectionString");
+    }
+
+    this.pool = options.pool ?? new Pool({ connectionString: options.connectionString });
+    this.tableName = quoteQualifiedIdentifier(options.tableName ?? "hephaestus_project_jobs");
+    this.ownsPool = !options.pool;
+  }
+
+  async migrate(): Promise<void> {
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS ${this.tableName} (
+        id text PRIMARY KEY,
+        chat_id bigint NOT NULL,
+        description text NOT NULL,
+        selected_model jsonb NOT NULL,
+        status text NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled', 'dead_letter')),
+        queued_at timestamptz NOT NULL,
+        attempt integer NOT NULL CHECK (attempt > 0),
+        max_attempts integer NOT NULL CHECK (max_attempts > 0),
+        root_job_id text NOT NULL,
+        started_at timestamptz,
+        finished_at timestamptz,
+        lease_expires_at timestamptz,
+        cancelled_at timestamptz,
+        dead_letter_at timestamptz,
+        retry_of_job_id text,
+        idempotency_key text,
+        project_dir text,
+        project_name text,
+        error text
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS hephaestus_project_jobs_idempotency_key_idx
+        ON ${this.tableName} (idempotency_key)
+        WHERE idempotency_key IS NOT NULL;
+
+      CREATE INDEX IF NOT EXISTS hephaestus_project_jobs_claim_idx
+        ON ${this.tableName} (status, queued_at);
+
+      CREATE INDEX IF NOT EXISTS hephaestus_project_jobs_chat_queued_idx
+        ON ${this.tableName} (chat_id, queued_at DESC);
+
+      CREATE INDEX IF NOT EXISTS hephaestus_project_jobs_lease_idx
+        ON ${this.tableName} (lease_expires_at)
+        WHERE status = 'running';
+    `);
+  }
+
+  async close(): Promise<void> {
+    if (this.ownsPool) {
+      await this.pool.end?.();
+    }
+  }
+
+  async insert(job: ProjectJob): Promise<ProjectJob> {
+    const result = await this.pool.query<ProjectJobRow>(
+      `
+        INSERT INTO ${this.tableName} (
+          id,
+          chat_id,
+          description,
+          selected_model,
+          status,
+          queued_at,
+          attempt,
+          max_attempts,
+          root_job_id,
+          started_at,
+          finished_at,
+          lease_expires_at,
+          cancelled_at,
+          dead_letter_at,
+          retry_of_job_id,
+          idempotency_key,
+          project_dir,
+          project_name,
+          error
+        )
+        VALUES (
+          $1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10,
+          $11, $12, $13, $14, $15, $16, $17, $18, $19
+        )
+        ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
+        DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
+        RETURNING *
+      `,
+      projectJobValues(job)
+    );
+
+    return projectJobFromRow(firstRow(result, "insert project job"));
+  }
+
+  async listByChat(chatId: number): Promise<ProjectJob[]> {
+    const result = await this.pool.query<ProjectJobRow>(
+      `SELECT * FROM ${this.tableName} WHERE chat_id = $1 ORDER BY queued_at DESC`,
+      [chatId]
+    );
+
+    return result.rows.map(projectJobFromRow);
+  }
+
+  async getByChat(chatId: number, jobId: string): Promise<ProjectJob | null> {
+    const result = await this.pool.query<ProjectJobRow>(
+      `SELECT * FROM ${this.tableName} WHERE chat_id = $1 AND id = $2`,
+      [chatId, jobId]
+    );
+
+    return result.rows[0] ? projectJobFromRow(result.rows[0]) : null;
+  }
+
+  async claimNext(now: Date, leaseMs: number): Promise<ProjectJob | null> {
+    return this.withTransaction(async (client) => {
+      const nowIso = now.toISOString();
+      await client.query(
+        `
+          UPDATE ${this.tableName}
+          SET
+            status = 'dead_letter',
+            finished_at = $1,
+            dead_letter_at = $1,
+            lease_expires_at = NULL,
+            error = 'Job lease expired after ' || attempt || ' attempt(s)'
+          WHERE status = 'running'
+            AND lease_expires_at <= $1
+            AND attempt >= max_attempts
+        `,
+        [nowIso]
+      );
+      await client.query(
+        `
+          UPDATE ${this.tableName}
+          SET
+            status = 'pending',
+            attempt = attempt + 1,
+            started_at = NULL,
+            lease_expires_at = NULL,
+            error = $2
+          WHERE status = 'running'
+            AND lease_expires_at <= $1
+            AND attempt < max_attempts
+        `,
+        [nowIso, `Recovered from expired lease at ${nowIso}`]
+      );
+
+      const result = await client.query<ProjectJobRow>(
+        `
+          WITH next_job AS (
+            SELECT id
+            FROM ${this.tableName}
+            WHERE status = 'pending'
+            ORDER BY queued_at ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+          )
+          UPDATE ${this.tableName} AS jobs
+          SET
+            status = 'running',
+            started_at = $1,
+            lease_expires_at = $2,
+            dead_letter_at = NULL,
+            error = NULL
+          FROM next_job
+          WHERE jobs.id = next_job.id
+          RETURNING jobs.*
+        `,
+        [nowIso, leaseDeadline(now, leaseMs).toISOString()]
+      );
+
+      return result.rows[0] ? projectJobFromRow(result.rows[0]) : null;
+    });
+  }
+
+  async renew(jobId: string, leaseExpiresAt: string): Promise<ProjectJob> {
+    const updated = await this.pool.query<ProjectJobRow>(
+      `
+        UPDATE ${this.tableName}
+        SET lease_expires_at = $2
+        WHERE id = $1 AND status = 'running'
+        RETURNING *
+      `,
+      [jobId, leaseExpiresAt]
+    );
+    if (updated.rows[0]) {
+      return projectJobFromRow(updated.rows[0]);
+    }
+
+    return this.getByIdOrThrow(jobId);
+  }
+
+  async retry(jobId: string, chatId: number, createRetryJob: (job: ProjectJob) => ProjectJob): Promise<ProjectJob> {
+    return this.withTransaction(async (client) => {
+      const current = await client.query<ProjectJobRow>(
+        `SELECT * FROM ${this.tableName} WHERE chat_id = $1 AND id = $2 FOR UPDATE`,
+        [chatId, jobId]
+      );
+      const job = current.rows[0] ? projectJobFromRow(current.rows[0]) : null;
+      if (!job) {
+        throw new Error(`Unknown project job: ${jobId}`);
+      }
+
+      if (!isTerminalJobStatus(job.status)) {
+        throw new Error(`Job is not finished yet: ${jobId}`);
+      }
+
+      const retriedJob = createRetryJob(job);
+      const inserted = await client.query<ProjectJobRow>(
+        `
+          INSERT INTO ${this.tableName} (
+            id,
+            chat_id,
+            description,
+            selected_model,
+            status,
+            queued_at,
+            attempt,
+            max_attempts,
+            root_job_id,
+            started_at,
+            finished_at,
+            lease_expires_at,
+            cancelled_at,
+            dead_letter_at,
+            retry_of_job_id,
+            idempotency_key,
+            project_dir,
+            project_name,
+            error
+          )
+          VALUES (
+            $1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10,
+            $11, $12, $13, $14, $15, $16, $17, $18, $19
+          )
+          RETURNING *
+        `,
+        projectJobValues(retriedJob)
+      );
+
+      return projectJobFromRow(firstRow(inserted, "retry project job"));
+    });
+  }
+
+  async cancel(jobId: string, chatId: number, finishedAt: string): Promise<ProjectJob> {
+    const updated = await this.pool.query<ProjectJobRow>(
+      `
+        UPDATE ${this.tableName}
+        SET
+          status = 'cancelled',
+          finished_at = $3,
+          lease_expires_at = NULL,
+          cancelled_at = $3,
+          error = NULL
+        WHERE id = $1
+          AND chat_id = $2
+          AND status NOT IN ('completed', 'failed', 'cancelled', 'dead_letter')
+        RETURNING *
+      `,
+      [jobId, chatId, finishedAt]
+    );
+    if (updated.rows[0]) {
+      return projectJobFromRow(updated.rows[0]);
+    }
+
+    const current = await this.getByChat(chatId, jobId);
+    if (!current) {
+      throw new Error(`Unknown project job: ${jobId}`);
+    }
+
+    return current;
+  }
+
+  async update(jobId: string, patch: Partial<ProjectJob>): Promise<ProjectJob> {
+    return this.withTransaction(async (client) => {
+      const currentResult = await client.query<ProjectJobRow>(
+        `SELECT * FROM ${this.tableName} WHERE id = $1 FOR UPDATE`,
+        [jobId]
+      );
+      const current = currentResult.rows[0] ? projectJobFromRow(currentResult.rows[0]) : null;
+      if (!current) {
+        throw new Error(`Unknown project job: ${jobId}`);
+      }
+
+      if (isProtectedTerminalStatus(current.status) && isTerminalPatch(patch)) {
+        return current;
+      }
+
+      const update = projectJobPatchSql(patch);
+      if (update.assignments.length === 0) {
+        return current;
+      }
+
+      const result = await client.query<ProjectJobRow>(
+        `
+          UPDATE ${this.tableName}
+          SET ${update.assignments.join(", ")}
+          WHERE id = $1
+          RETURNING *
+        `,
+        [jobId, ...update.values]
+      );
+
+      return projectJobFromRow(firstRow(result, "update project job"));
+    });
+  }
+
+  private async getByIdOrThrow(jobId: string): Promise<ProjectJob> {
+    const result = await this.pool.query<ProjectJobRow>(
+      `SELECT * FROM ${this.tableName} WHERE id = $1`,
+      [jobId]
+    );
+    if (!result.rows[0]) {
+      throw new Error(`Unknown project job: ${jobId}`);
+    }
+
+    return projectJobFromRow(result.rows[0]);
+  }
+
+  private async withTransaction<T>(operation: (client: PostgresProjectJobClient) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await operation(client);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 }
 
@@ -1236,6 +1615,120 @@ function isTerminalPatch(patch: Partial<ProjectJob>): boolean {
 
 function isProtectedTerminalStatus(status: ProjectJobStatus): boolean {
   return status === "cancelled" || status === "dead_letter";
+}
+
+function projectJobValues(job: ProjectJob): unknown[] {
+  return [
+    job.id,
+    job.chatId,
+    job.description,
+    JSON.stringify(job.selectedModel),
+    job.status,
+    job.queuedAt,
+    job.attempt,
+    job.maxAttempts,
+    job.rootJobId,
+    job.startedAt ?? null,
+    job.finishedAt ?? null,
+    job.leaseExpiresAt ?? null,
+    job.cancelledAt ?? null,
+    job.deadLetterAt ?? null,
+    job.retryOfJobId ?? null,
+    job.idempotencyKey ?? null,
+    job.projectDir ?? null,
+    job.projectName ?? null,
+    job.error ?? null
+  ];
+}
+
+function projectJobFromRow(row: ProjectJobRow): ProjectJob {
+  return normalizeProjectJob({
+    id: row.id,
+    chatId: Number(row.chat_id),
+    description: row.description,
+    selectedModel: parseSelectedModel(row.selected_model),
+    status: row.status,
+    queuedAt: toIsoString(row.queued_at),
+    attempt: row.attempt,
+    maxAttempts: row.max_attempts,
+    rootJobId: row.root_job_id,
+    startedAt: toOptionalIsoString(row.started_at),
+    finishedAt: toOptionalIsoString(row.finished_at),
+    leaseExpiresAt: toOptionalIsoString(row.lease_expires_at),
+    cancelledAt: toOptionalIsoString(row.cancelled_at),
+    deadLetterAt: toOptionalIsoString(row.dead_letter_at),
+    retryOfJobId: row.retry_of_job_id ?? undefined,
+    idempotencyKey: row.idempotency_key ?? undefined,
+    projectDir: row.project_dir ?? undefined,
+    projectName: row.project_name ?? undefined,
+    error: row.error ?? undefined
+  });
+}
+
+function parseSelectedModel(value: ModelOption | string): ModelOption {
+  return typeof value === "string" ? JSON.parse(value) as ModelOption : value;
+}
+
+function toOptionalIsoString(value: Date | string | null): string | undefined {
+  return value === null ? undefined : toIsoString(value);
+}
+
+function toIsoString(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+function firstRow<R extends QueryResultRow>(result: QueryResult<R>, operation: string): R {
+  if (!result.rows[0]) {
+    throw new Error(`Postgres did not return a row for ${operation}`);
+  }
+
+  return result.rows[0];
+}
+
+const PROJECT_JOB_PATCH_COLUMNS = {
+  status: "status",
+  queuedAt: "queued_at",
+  attempt: "attempt",
+  maxAttempts: "max_attempts",
+  rootJobId: "root_job_id",
+  startedAt: "started_at",
+  finishedAt: "finished_at",
+  leaseExpiresAt: "lease_expires_at",
+  cancelledAt: "cancelled_at",
+  deadLetterAt: "dead_letter_at",
+  retryOfJobId: "retry_of_job_id",
+  idempotencyKey: "idempotency_key",
+  projectDir: "project_dir",
+  projectName: "project_name",
+  error: "error"
+} satisfies Partial<Record<keyof ProjectJob, string>>;
+
+function projectJobPatchSql(patch: Partial<ProjectJob>): { assignments: string[]; values: unknown[] } {
+  const assignments: string[] = [];
+  const values: unknown[] = [];
+
+  for (const [key, column] of Object.entries(PROJECT_JOB_PATCH_COLUMNS) as Array<[keyof ProjectJob, string]>) {
+    if (!Object.prototype.hasOwnProperty.call(patch, key)) {
+      continue;
+    }
+
+    values.push(patch[key] ?? null);
+    assignments.push(`${column} = $${values.length + 1}`);
+  }
+
+  return { assignments, values };
+}
+
+function quoteQualifiedIdentifier(value: string): string {
+  return value.split(".").map(quoteIdentifier).join(".");
+}
+
+function quoteIdentifier(value: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+    throw new Error(`Invalid SQL identifier: ${value}`);
+  }
+
+  return `"${value}"`;
 }
 
 function timestampLabel(date: Date): string {
