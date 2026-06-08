@@ -49,6 +49,53 @@ describe("projectSpecSchema", () => {
     });
   });
 
+  it("normalizes common model-shaped object collections", () => {
+    const spec = projectSpecSchema.parse({
+      projectName: "book-tracker",
+      description: "Track personal books",
+      actors: {
+        user: "Primary user"
+      },
+      features: [
+        {
+          id: "books-crud",
+          title: "Manage books",
+          description: "Create, update, and delete books",
+          priority: 1
+        }
+      ],
+      entities: {
+        Book: {
+          fields: {
+            title: "string",
+            summary: "Short public description"
+          }
+        }
+      },
+      constraints: {
+        offlineFirst: true,
+        locale: "Russian UI"
+      },
+      acceptanceCriteria: {
+        manageOwnBooks: "User can manage only their own books"
+      }
+    });
+
+    expect(spec.features[0]?.priority).toBe("must");
+    expect(spec.entities[0]?.name).toBe("Book");
+    expect(spec.entities[0]?.fields[0]).toMatchObject({
+      name: "title",
+      type: "string"
+    });
+    expect(spec.entities[0]?.fields[1]).toMatchObject({
+      name: "summary",
+      type: "string",
+      description: "Short public description"
+    });
+    expect(spec.constraints).toEqual(["OfflineFirst", "Russian UI"]);
+    expect(spec.acceptanceCriteria).toEqual(["User can manage only their own books"]);
+  });
+
   it("accepts typed fields, indexes and references", () => {
     const spec = projectSpecSchema.parse({
       projectName: "task-manager",

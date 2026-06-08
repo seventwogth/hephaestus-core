@@ -1336,9 +1336,11 @@ function buildRequirementsInstruction(): string {
     '- projectName: kebab-case имя проекта',
     "- description: краткое описание",
     "- actors: минимум один актор",
-    "- features: минимум одна feature с id, title, description, priority",
-    "- entities: сущности с fields и при необходимости indexes",
-    "- requiresAuth, requiresDatabase, constraints, acceptanceCriteria",
+    '- features: массив; минимум одна feature с id, title, description, priority; priority строго "must", "should" или "could", не число',
+    "- entities: массив сущностей; не объект/map; каждая сущность содержит name, fields и при необходимости indexes",
+    "- requiresAuth, requiresDatabase",
+    "- constraints: массив строк, не объект/map",
+    "- acceptanceCriteria: массив строк",
     "Не добавляй комментарии и лишние поля вне схемы."
   ].join("\n");
 }
