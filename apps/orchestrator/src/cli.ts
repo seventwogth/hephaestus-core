@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { analyzeRequirements, createArchitecturePlan } from "@hephaestus/agents";
 import { projectSpecSchema } from "@hephaestus/contracts";
 import { createLocalModelProvider, type ModelProvider } from "@hephaestus/hermes-adapter";
@@ -16,6 +17,25 @@ import {
   FileProjectStateStore,
   Orchestrator
 } from "./index.js";
+
+async function tryLoadEnvFile(filePath: string): Promise<boolean> {
+  try {
+    const content = await readFile(filePath, "utf8");
+    for (const line of content.split("\n")) {
+      const match = line.match(/^export\s+([^=]+)="?([^"]*)"?$/);
+      if (match) {
+        const key = match[1].trim();
+        const value = match[2].trim();
+        if (!process.env[key]) {
+          process.env[key] = value;
+        }
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export interface ScaffoldCliOptions {
   specPath: string;
@@ -272,6 +292,11 @@ export async function bootstrapProjectFromDescription(
 }
 
 async function main(): Promise<void> {
+  // Автоматически загружаем .env.hephaestus из текущей директории или корня проекта
+  const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+  await tryLoadEnvFile(resolve(process.cwd(), ".env.hephaestus"));
+  await tryLoadEnvFile(resolve(rootDir, ".env.hephaestus"));
+
   const args = process.argv.slice(2);
 
   if (args[0] === "requirements") {

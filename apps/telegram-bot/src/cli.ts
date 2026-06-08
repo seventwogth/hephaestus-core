@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-import { resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { resolve, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseSandboxRunnerFromEnv } from "@hephaestus/orchestrator";
 import {
   FilePollingOffsetStore,
@@ -18,7 +20,31 @@ import {
   type ProjectJobQueue
 } from "./index.js";
 
+async function tryLoadEnvFile(filePath: string): Promise<boolean> {
+  try {
+    const content = await readFile(filePath, "utf8");
+    for (const line of content.split("\n")) {
+      const match = line.match(/^export\s+([^=]+)="?([^"]*)"?$/);
+      if (match) {
+        const key = match[1].trim();
+        const value = match[2].trim();
+        if (!process.env[key]) {
+          process.env[key] = value;
+        }
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function main(): Promise<void> {
+  // Автоматически загружаем .env.hephaestus из текущей директории или корня проекта
+  const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+  await tryLoadEnvFile(resolve(process.cwd(), ".env.hephaestus"));
+  await tryLoadEnvFile(resolve(rootDir, ".env.hephaestus"));
+
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) {
     throw new Error("TELEGRAM_BOT_TOKEN is required");
@@ -30,7 +56,10 @@ async function main(): Promise<void> {
   const mode = parseBotMode(process.argv.slice(2)[0] ?? process.env.HEPHAESTUS_BOT_MODE);
   const workerPollIntervalMs = parseInterval(process.env.HEPHAESTUS_JOB_POLL_INTERVAL_MS);
   const noScaffold = parseBoolean(process.env.HEPHAESTUS_NO_SCAFFOLD);
-  const api = new TelegramHttpApi({ token });
+  const api = new TelegramHttpApi({
+    token,
+    apiBaseUrl: process.env.HEPHAESTUS_TELEGRAM_API_URL
+  });
   const sessionStore = new FileTelegramSessionStore(joinPath(stateDir, "sessions.json"));
   const jobQueue = await createJobQueue(stateDir);
   const bootstrapper = new LocalProjectBootstrapper({

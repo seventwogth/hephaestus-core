@@ -210,7 +210,8 @@ write_env_file() {
   available_models=$4
   bot_mode=$5
   ollama_url=$6
-  poll_interval_ms=$7
+  telegram_api_url=$7
+  poll_interval_ms=$8
 
   cat >"$ENV_FILE" <<EOF
 export TELEGRAM_BOT_TOKEN="$bot_token"
@@ -219,6 +220,7 @@ export HEPHAESTUS_BOT_STATE_DIR="$state_dir"
 export HEPHAESTUS_AVAILABLE_MODELS="$available_models"
 export HEPHAESTUS_BOT_MODE="$bot_mode"
 export HEPHAESTUS_OLLAMA_BASE_URL="$ollama_url"
+export HEPHAESTUS_TELEGRAM_API_URL="$telegram_api_url"
 export HEPHAESTUS_JOB_POLL_INTERVAL_MS="$poll_interval_ms"
 EOF
 }
@@ -273,6 +275,7 @@ projects_dir=$(prompt_default "Директория для проектов" "$H
 state_dir=$(prompt_default "Директория для состояния бота" "$HOME/hephaestus-bot-state")
 bot_mode=$(prompt_default "Режим запуска бота (all, poll, worker)" "all")
 ollama_url=$(prompt_default "URL локального Ollama API" "http://127.0.0.1:11434")
+telegram_api_url=$(prompt_default "URL Telegram API (для обхода блокировок)" "https://api.telegram.org")
 poll_interval_ms=$(prompt_default "Интервал опроса очереди worker в мс" "3000")
 
 available_models="$default_model|Primary Model|Модель по умолчанию"
@@ -293,7 +296,7 @@ if command_exists ollama && prompt_yes_no "Скачать модель $default_
 fi
 
 mkdir -p "$projects_dir" "$state_dir"
-write_env_file "$bot_token" "$projects_dir" "$state_dir" "$available_models" "$bot_mode" "$ollama_url" "$poll_interval_ms"
+write_env_file "$bot_token" "$projects_dir" "$state_dir" "$available_models" "$bot_mode" "$ollama_url" "$telegram_api_url" "$poll_interval_ms"
 
 say ""
 say "Готово. Конфигурация сохранена в $ENV_FILE"
