@@ -47,6 +47,44 @@ describe("CommandModelProvider", () => {
     expect(result.updatedFiles[0]?.path).toBe("PLAN.json");
     expect(result.manifest?.createdFiles).toEqual(["PLAN.json"]);
   });
+
+  it("serializes object content for JSON files returned by a model", async () => {
+    const provider = new CommandModelProvider({
+      command: "sh",
+      args: [
+        "-c",
+        "printf '%s' '{\"summary\":\"Handled requirements\",\"changedFiles\":[\"SPEC.json\"],\"updatedFiles\":[{\"path\":\"SPEC.json\",\"content\":{\"projectName\":\"demo\",\"features\":[]}}]}'"
+      ]
+    });
+
+    const result = await provider.generate({
+      role: "requirements",
+      instruction: "Create a spec",
+      files: [{ path: "REQUEST.md", content: "demo" }],
+      writableFiles: ["SPEC.json"]
+    });
+
+    expect(result.updatedFiles[0]?.content).toBe("{\n  \"projectName\": \"demo\",\n  \"features\": []\n}\n");
+  });
+
+  it("rejects object content for non-JSON files before writing artifacts", async () => {
+    const provider = new CommandModelProvider({
+      command: "sh",
+      args: [
+        "-c",
+        "printf '%s' '{\"summary\":\"Handled backend\",\"changedFiles\":[\"backend/main.go\"],\"updatedFiles\":[{\"path\":\"backend/main.go\",\"content\":{\"code\":\"package main\"}}]}'"
+      ]
+    });
+
+    await expect(
+      provider.generate({
+        role: "backend",
+        instruction: "Create backend",
+        files: [],
+        writableFiles: ["backend/main.go"]
+      })
+    ).rejects.toThrow("Agent result updatedFiles[0].content for backend/main.go must be a string; received object");
+  });
 });
 
 describe("OllamaModelProvider", () => {

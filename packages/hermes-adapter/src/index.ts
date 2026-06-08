@@ -197,6 +197,7 @@ export class OllamaModelProvider implements ModelProvider {
         "Ты агент Hermes, который генерирует и редактирует файлы проекта.",
         "Отвечай строго JSON-объектом без markdown и без пояснений вне JSON.",
         'Формат ответа: {"summary":"...","changedFiles":["path"],"updatedFiles":[{"path":"...","content":"..."}],"manifest":{"createdFiles":["path"],"updatedFiles":["path"],"validationCommands":["cmd"],"notes":["optional"]},"rawOutput":"optional"}',
+        "Поле updatedFiles[].content всегда должно быть строкой с полным содержимым файла; JSON-файлы тоже возвращай как строку, а не вложенный объект.",
         "Если файл не нужно менять, не добавляй его в updatedFiles.",
         "Для каждого запуска обязательно верни manifest: перечисли созданные/обновленные файлы и команды проверки.",
         "Содержимое файлов возвращай полностью."
@@ -283,16 +284,107 @@ export function createLocalModelProvider(
 }
 
 function parseAgentRunResult(role: AgentRole, rawOutput: string): AgentRunResult {
-  const payload = JSON.parse(rawOutput) as Partial<AgentRunResult> & { rawOutput?: string };
+  const payload = parseJsonObject(rawOutput);
 
   return {
     role,
-    summary: payload.summary ?? "Command model provider run completed",
-    changedFiles: payload.changedFiles ?? [],
-    updatedFiles: payload.updatedFiles ?? [],
-    manifest: payload.manifest,
-    rawOutput: payload.rawOutput ?? rawOutput
+    summary: typeof payload.summary === "string" ? payload.summary : "Command model provider run completed",
+    changedFiles: getStringArray(payload.changedFiles),
+    updatedFiles: parseUpdatedFiles(payload.updatedFiles),
+    manifest: parseManifest(payload.manifest),
+    rawOutput: typeof payload.rawOutput === "string" ? payload.rawOutput : rawOutput
   };
+}
+
+function parseJsonObject(rawOutput: string): Record<string, unknown> {
+  const payload = JSON.parse(rawOutput) as unknown;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Agent result must be a JSON object");
+  }
+
+  return payload as Record<string, unknown>;
+}
+
+function parseUpdatedFiles(value: unknown): AgentFileContext[] {
+  if (value === undefined) {
+    return [];
+  }
+
+  if (!Array.isArray(value)) {
+    throw new Error("Agent result updatedFiles must be an array");
+  }
+
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`Agent result updatedFiles[${index}] must be an object`);
+    }
+
+    const file = item as Record<string, unknown>;
+    if (typeof file.path !== "string" || file.path.length === 0) {
+      throw new Error(`Agent result updatedFiles[${index}].path must be a non-empty string`);
+    }
+
+    return {
+      path: file.path,
+      content: normalizeFileContent(file.path, file.content, index)
+    };
+  });
+}
+
+function normalizeFileContent(path: string, content: unknown, index: number): string {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (content !== null && typeof content === "object" && path.endsWith(".json")) {
+    return `${JSON.stringify(content, null, 2)}\n`;
+  }
+
+  throw new Error(
+    `Agent result updatedFiles[${index}].content for ${path} must be a string; received ${describeValue(content)}`
+  );
+}
+
+function parseManifest(value: unknown): AgentRunManifest | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Agent result manifest must be an object");
+  }
+
+  const manifest = value as Record<string, unknown>;
+  return {
+    createdFiles: getStringArray(manifest.createdFiles),
+    updatedFiles: getStringArray(manifest.updatedFiles),
+    validationCommands: getStringArray(manifest.validationCommands),
+    notes: manifest.notes === undefined ? undefined : getStringArray(manifest.notes)
+  };
+}
+
+function getStringArray(value: unknown): string[] {
+  if (value === undefined) {
+    return [];
+  }
+
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function describeValue(value: unknown): string {
+  if (value === null) {
+    return "null";
+  }
+
+  if (Array.isArray(value)) {
+    return "array";
+  }
+
+  return typeof value;
 }
 
 function buildOllamaPrompt(input: AgentRunInput): string {
