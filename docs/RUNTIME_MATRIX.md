@@ -18,7 +18,8 @@
 GitHub Actions запускает production-readiness baseline на Ubuntu:
 
 - root workspace: `npm ci`, `npm run check:lockfile`, `npm test`,
-  `npm run typecheck`, `npm run build`, `npm run build:validation-image`;
+  Postgres queue integration smoke, `npm run typecheck`, `npm run build`,
+  `npm run build:validation-image`;
 - generated webapp template: `docker compose config`, Go backend tests,
   frontend `npm ci`, frontend tests and frontend build.
 

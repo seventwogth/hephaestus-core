@@ -461,9 +461,9 @@ describe("persistent Telegram bot state", () => {
     await store.migrate();
 
     expect(pool.queries[0]?.text).toContain("CREATE TABLE IF NOT EXISTS \"telegram\".\"project_jobs\"");
-    expect(pool.queries[0]?.text).toContain("CREATE UNIQUE INDEX IF NOT EXISTS hephaestus_project_jobs_idempotency_key_idx");
+    expect(pool.queries[0]?.text).toContain("CREATE UNIQUE INDEX IF NOT EXISTS \"project_jobs_idempotency_key_idx\"");
     expect(pool.queries[0]?.text).toContain("WHERE idempotency_key IS NOT NULL");
-    expect(pool.queries[0]?.text).toContain("hephaestus_project_jobs_lease_idx");
+    expect(pool.queries[0]?.text).toContain("\"project_jobs_lease_idx\"");
   });
 
   it("rejects unsafe Postgres table names", () => {

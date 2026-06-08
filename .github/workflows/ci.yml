@@ -15,6 +15,20 @@ jobs:
   core:
     name: Core workspace
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: hephaestus_test
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d hephaestus_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     steps:
       - name: Checkout
@@ -35,6 +49,11 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+      - name: Run Postgres queue integration smoke
+        env:
+          HEPHAESTUS_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/hephaestus_test?sslmode=disable
+        run: npm run test:postgres -w @hephaestus/telegram-bot
 
       - name: Run typecheck
         run: npm run typecheck

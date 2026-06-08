@@ -530,6 +530,7 @@ interface ProjectJobRow extends QueryResultRow {
 export class PostgresProjectJobStore implements ProjectJobStore {
   private readonly pool: PostgresProjectJobPool;
   private readonly tableName: string;
+  private readonly indexPrefix: string;
   private readonly ownsPool: boolean;
 
   constructor(options: PostgresProjectJobStoreOptions) {
@@ -539,6 +540,7 @@ export class PostgresProjectJobStore implements ProjectJobStore {
 
     this.pool = options.pool ?? new Pool({ connectionString: options.connectionString });
     this.tableName = quoteQualifiedIdentifier(options.tableName ?? "hephaestus_project_jobs");
+    this.indexPrefix = sqlIdentifierLeaf(options.tableName ?? "hephaestus_project_jobs");
     this.ownsPool = !options.pool;
   }
 
@@ -566,17 +568,17 @@ export class PostgresProjectJobStore implements ProjectJobStore {
         error text
       );
 
-      CREATE UNIQUE INDEX IF NOT EXISTS hephaestus_project_jobs_idempotency_key_idx
+      CREATE UNIQUE INDEX IF NOT EXISTS ${this.indexName("idempotency_key_idx")}
         ON ${this.tableName} (idempotency_key)
         WHERE idempotency_key IS NOT NULL;
 
-      CREATE INDEX IF NOT EXISTS hephaestus_project_jobs_claim_idx
+      CREATE INDEX IF NOT EXISTS ${this.indexName("claim_idx")}
         ON ${this.tableName} (status, queued_at);
 
-      CREATE INDEX IF NOT EXISTS hephaestus_project_jobs_chat_queued_idx
+      CREATE INDEX IF NOT EXISTS ${this.indexName("chat_queued_idx")}
         ON ${this.tableName} (chat_id, queued_at DESC);
 
-      CREATE INDEX IF NOT EXISTS hephaestus_project_jobs_lease_idx
+      CREATE INDEX IF NOT EXISTS ${this.indexName("lease_idx")}
         ON ${this.tableName} (lease_expires_at)
         WHERE status = 'running';
     `);
@@ -863,6 +865,10 @@ export class PostgresProjectJobStore implements ProjectJobStore {
     } finally {
       client.release();
     }
+  }
+
+  private indexName(suffix: string): string {
+    return quoteIdentifier(`${this.indexPrefix}_${suffix}`);
   }
 }
 
@@ -1723,12 +1729,21 @@ function quoteQualifiedIdentifier(value: string): string {
   return value.split(".").map(quoteIdentifier).join(".");
 }
 
+function sqlIdentifierLeaf(value: string): string {
+  const parts = value.split(".");
+  return quoteIdentifierValue(parts[parts.length - 1] ?? value);
+}
+
 function quoteIdentifier(value: string): string {
+  return `"${quoteIdentifierValue(value)}"`;
+}
+
+function quoteIdentifierValue(value: string): string {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
     throw new Error(`Invalid SQL identifier: ${value}`);
   }
 
-  return `"${value}"`;
+  return value;
 }
 
 function timestampLabel(date: Date): string {

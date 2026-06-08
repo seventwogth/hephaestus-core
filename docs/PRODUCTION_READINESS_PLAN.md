@@ -120,9 +120,10 @@ local/dev backend, а Postgres выбран как durable backend. Добавл
 `FOR UPDATE SKIP LOCKED`. File store усилен production lifecycle полями: lease
 recovery increments attempts, retry сохраняет lineage через `rootJobId` и
 `retryOfJobId`, enqueue поддерживает `idempotencyKey`, а repeated lease
-expiration переводит job в terminal `dead_letter` с диагностикой. Не закрыто:
-integration smoke с живым Postgres, полноценные ownership/retention policies и
-опциональный Redis/lightweight backend.
+expiration переводит job в terminal `dead_letter` с диагностикой. CI запускает
+live Postgres integration smoke для migration, idempotency, concurrent claim,
+lease recovery, dead-letter, cancel и retry lineage. Не закрыто: полноценные
+ownership/retention policies и опциональный Redis/lightweight backend.
 
 Работы:
 
@@ -135,7 +136,7 @@ integration smoke с живым Postgres, полноценные ownership/reten
 - добавить per-user/project ownership;
 - добавить retention policy для completed/failed jobs и generated artifacts;
 - оставить file queue как local/dev backend за общим интерфейсом.
-- добавить integration smoke для Postgres backend в CI или release gate.
+- поддерживать integration smoke для Postgres backend в CI или release gate.
 
 Acceptance gate:
 

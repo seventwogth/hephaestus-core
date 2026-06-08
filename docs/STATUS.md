@@ -30,7 +30,7 @@
 - В основной bootstrap flow встроены `integrator` и `documentation` agent stages, а также автоматический `validate -> fixer -> revalidate` цикл после генерации кода.
 - Добавлен локальный CLI entrypoint для того же LLM-first потока: проект можно запускать напрямую на машине с Ollama/Hermes без Telegram.
 - Telegram-бот теперь хранит сессии, очередь заданий и polling offset на диске, а долгие генерации выполняет через persistent job queue с уведомлениями о старте, успехе и ошибке.
-- Job queue lifecycle отделен от storage backend через `ProjectJobStore` и `StoredProjectJobQueue`; добавлен Postgres durable backend с миграцией, idempotency index и transactional `FOR UPDATE SKIP LOCKED` claim; file queue остается local/dev backend с теми же Phase 2 lifecycle primitives.
+- Job queue lifecycle отделен от storage backend через `ProjectJobStore` и `StoredProjectJobQueue`; добавлен Postgres durable backend с миграцией, idempotency index, transactional `FOR UPDATE SKIP LOCKED` claim и live Postgres integration smoke в CI; file queue остается local/dev backend с теми же Phase 2 lifecycle primitives.
 - Telegram polling UI и queue worker теперь можно запускать раздельно как отдельные процессы/сервисы на хост-машине.
 - Добавлен интерактивный `setup.sh`, который помогает подготовить хост-машину, установить зависимости, сгенерировать `.env.hephaestus` и быстро поднять Telegram runtime.
 - Документация и пользовательские тексты шаблона переведены на русский.
@@ -38,7 +38,7 @@
 ## Частично сделано
 
 - Phase 1 sandbox hardening закрывает ключевые execution boundary риски: file/path boundary, command env isolation, runtime cache cleanup, timeout escalation, output limit, generation report failure summary, Docker runner command interface, validation image, env-based worker/CLI wiring, per-check network policy, Docker storage limit option, hard workspace disk quota и post-bootstrap artifact allowlist покрыты тестами/smoke checks.
-- Phase 2 durable queue начата с Postgres-backed `ProjectJobStore`, общего job lifecycle и усиленного local/dev file backend, но ещё нет integration smoke с живым Postgres, ownership fields и retention policy.
+- Phase 2 durable queue начата с Postgres-backed `ProjectJobStore`, общего job lifecycle, live Postgres smoke и усиленного local/dev file backend, но ещё нет ownership fields и retention policy.
 - Оркестратор теперь умеет проходить основные этапы через LLM, но детерминированные генераторы всё ещё остаются fallback-путём и частью legacy-команд `requirements/plan/generate-*`.
 - Telegram-бот теперь переживает рестарты по session/queue state и умеет работать в разделенном `poll/worker` режиме, но ещё нет готовых service units для systemd/launchd/Windows Service.
 - Промпты agent stages уже охватывают full-stack flow, но качество результата всё ещё зависит от силы локальной модели и пока не разделено на более узкие под-агенты по доменам.
@@ -46,7 +46,7 @@
 
 ## Следующие крупные шаги
 
-1. Продолжить Phase 2 production roadmap: добавить Postgres integration smoke, ownership fields и retention policy для jobs/artifacts.
+1. Продолжить Phase 2 production roadmap: добавить ownership fields и retention policy для jobs/artifacts.
 2. Добавить готовые service templates для `systemd`, `launchd` и Windows Service, чтобы `poll` и `worker` поднимались как фоновые сервисы.
 3. Добавить команды управления заданиями из Telegram: повторный запуск, отмена pending job, просмотр детального лога и путь к последнему проекту.
 4. Расширить backend/frontend генераторы и агентные промпты с одной основной сущности до нескольких связанных ресурсов поверх уже расширенного DB-плана.
