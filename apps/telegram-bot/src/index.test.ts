@@ -5,15 +5,18 @@ import { describe, expect, it } from "vitest";
 import {
   createModelProviderForOption,
   FilePollingOffsetStore,
+  FileProjectJobStore,
   FileProjectJobQueue,
   FileTelegramSessionStore,
   HephaestusTelegramBot,
+  InMemoryProjectJobStore,
   InMemoryProjectJobQueue,
   InMemoryTelegramSessionStore,
   LocalProjectBootstrapper,
   parseAvailableModels,
   ProjectJobRunner,
   readSelectedModel,
+  StoredProjectJobQueue,
   TelegramPollingRuntime,
   TelegramWorkerRuntime,
   type ProjectBootstrapper,
@@ -292,6 +295,56 @@ describe("persistent Telegram bot state", () => {
       expect(jobs).toHaveLength(1);
       expect(jobs[0]).toMatchObject({
         idempotencyKey: "chat-100-message-42"
+      });
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("supports a reusable job store contract for queue backends", async () => {
+    const store = new InMemoryProjectJobStore();
+    const queue = new StoredProjectJobQueue(store, {
+      now: () => new Date("2026-01-01T00:00:00.000Z")
+    });
+
+    const job = await queue.enqueue({
+      chatId: 100,
+      description: "Создай сервис книг",
+      selectedModel: { id: "quality", label: "Quality" }
+    });
+    const claimed = await queue.claimNext();
+
+    expect(claimed).toMatchObject({
+      id: job.id,
+      status: "running"
+    });
+    await expect(store.getByChat(100, job.id)).resolves.toMatchObject({
+      id: job.id,
+      status: "running"
+    });
+  });
+
+  it("can compose the file store with the generic queue lifecycle", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "hephaestus-telegram-state-"));
+
+    try {
+      const filePath = join(rootDir, "jobs.json");
+      const queue = new StoredProjectJobQueue(
+        new FileProjectJobStore(filePath),
+        {
+          now: () => new Date("2026-01-01T00:00:00.000Z")
+        }
+      );
+
+      const job = await queue.enqueue({
+        chatId: 100,
+        description: "Создай сервис книг",
+        selectedModel: { id: "quality", label: "Quality" }
+      });
+
+      await expect(new FileProjectJobStore(filePath).getByChat(100, job.id)).resolves.toMatchObject({
+        id: job.id,
+        status: "pending"
       });
     } finally {
       await rm(rootDir, { recursive: true, force: true });

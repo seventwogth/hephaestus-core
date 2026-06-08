@@ -112,10 +112,12 @@ Acceptance gate:
 
 Цель: заменить single-node file queue на production-grade lifecycle.
 
-Статус: начато. Существующий file queue оставлен как local/dev backend за
-общим `ProjectJobQueue` интерфейсом и усилен production lifecycle полями:
-lease recovery increments attempts, retry сохраняет lineage через `rootJobId`
-и `retryOfJobId`, enqueue поддерживает `idempotencyKey`, а repeated lease
+Статус: начато. Job lifecycle отделен от storage backend через
+`ProjectJobStore` и `StoredProjectJobQueue`: текущие in-memory/file store
+остаются local/dev backend, а Postgres/Redis backend может реализовать тот же
+store contract. File store усилен production lifecycle полями: lease recovery
+increments attempts, retry сохраняет lineage через `rootJobId` и
+`retryOfJobId`, enqueue поддерживает `idempotencyKey`, а repeated lease
 expiration переводит job в terminal `dead_letter` с диагностикой. Не закрыто:
 выбор и реализация durable backend уровня Postgres/Redis, а также полноценные
 ownership/retention policies.

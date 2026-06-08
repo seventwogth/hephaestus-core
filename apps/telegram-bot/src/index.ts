@@ -160,231 +160,59 @@ export interface ProjectJobQueue {
   fail(jobId: string, error: string): Promise<ProjectJob>;
 }
 
-export class InMemoryProjectJobQueue implements ProjectJobQueue {
-  private readonly jobs: ProjectJob[] = [];
-
-  async enqueue(input: BootstrapProjectInput): Promise<ProjectJob> {
-    const existingJob = findIdempotentJob(this.jobs, input.idempotencyKey);
-    if (existingJob) {
-      return existingJob;
-    }
-
-    const job = createProjectJob(input);
-    this.jobs.push(job);
-    return job;
-  }
-
-  async listByChat(chatId: number): Promise<ProjectJob[]> {
-    return this.jobs
-      .filter((job) => job.chatId === chatId)
-      .slice()
-      .sort((left, right) => right.queuedAt.localeCompare(left.queuedAt));
-  }
-
-  async getByChat(chatId: number, jobId: string): Promise<ProjectJob | null> {
-    return this.jobs.find((job) => job.chatId === chatId && job.id === jobId) ?? null;
-  }
-
-  async claimNext(): Promise<ProjectJob | null> {
-    const index = this.jobs.findIndex((job) => job.status === "pending");
-    if (index === -1) {
-      return null;
-    }
-
-    const claimed = {
-      ...this.jobs[index],
-      status: "running" as const,
-      startedAt: new Date().toISOString(),
-      leaseExpiresAt: undefined,
-      deadLetterAt: undefined,
-      error: undefined
-    };
-    this.jobs[index] = claimed;
-    return claimed;
-  }
-
-  async complete(jobId: string, project: BootstrappedProject): Promise<ProjectJob> {
-    return this.update(jobId, {
-      status: "completed",
-      finishedAt: new Date().toISOString(),
-      projectDir: project.projectDir,
-      projectName: project.projectName,
-      error: undefined
-    });
-  }
-
-  async fail(jobId: string, error: string): Promise<ProjectJob> {
-    return this.update(jobId, {
-      status: "failed",
-      finishedAt: new Date().toISOString(),
-      error
-    });
-  }
-
-  async retry(jobId: string, chatId: number): Promise<ProjectJob> {
-    const job = await this.getByChat(chatId, jobId);
-    if (!job) {
-      throw new Error(`Unknown project job: ${jobId}`);
-    }
-
-    if (!isTerminalJobStatus(job.status)) {
-      throw new Error(`Job is not finished yet: ${jobId}`);
-    }
-
-    const retriedJob = createProjectJob(
-      {
-        chatId,
-        description: job.description,
-        selectedModel: job.selectedModel
-      },
-      new Date(),
-      {
-        attempt: job.attempt + 1,
-        maxAttempts: job.maxAttempts,
-        rootJobId: job.rootJobId,
-        retryOfJobId: job.id
-      }
-    );
-    this.jobs.push(retriedJob);
-    return retriedJob;
-  }
-
-  async cancel(jobId: string, chatId: number): Promise<ProjectJob> {
-    const job = await this.getByChat(chatId, jobId);
-    if (!job) {
-      throw new Error(`Unknown project job: ${jobId}`);
-    }
-
-    if (isTerminalJobStatus(job.status)) {
-      return job;
-    }
-
-    return this.update(jobId, {
-      status: "cancelled",
-      finishedAt: new Date().toISOString(),
-      leaseExpiresAt: undefined,
-      cancelledAt: new Date().toISOString(),
-      error: undefined
-    });
-  }
-
-  private async update(jobId: string, patch: Partial<ProjectJob>): Promise<ProjectJob> {
-    const index = this.jobs.findIndex((job) => job.id === jobId);
-    if (index === -1) {
-      throw new Error(`Unknown project job: ${jobId}`);
-    }
-
-    if (isProtectedTerminalStatus(this.jobs[index].status) && isTerminalPatch(patch)) {
-      return this.jobs[index];
-    }
-
-    const updated = { ...this.jobs[index], ...patch };
-    this.jobs[index] = updated;
-    return updated;
-  }
+export interface ProjectJobStore {
+  insert(job: ProjectJob): Promise<ProjectJob>;
+  listByChat(chatId: number): Promise<ProjectJob[]>;
+  getByChat(chatId: number, jobId: string): Promise<ProjectJob | null>;
+  claimNext(now: Date, leaseMs: number): Promise<ProjectJob | null>;
+  renew(jobId: string, leaseExpiresAt: string): Promise<ProjectJob>;
+  retry(jobId: string, chatId: number, createRetryJob: (job: ProjectJob) => ProjectJob): Promise<ProjectJob>;
+  cancel(jobId: string, chatId: number, finishedAt: string): Promise<ProjectJob>;
+  update(jobId: string, patch: Partial<ProjectJob>): Promise<ProjectJob>;
 }
 
-export class FileProjectJobQueue implements ProjectJobQueue {
-  private readonly lockTimeoutMs: number;
-  private readonly lockStaleMs: number;
+export class StoredProjectJobQueue implements ProjectJobQueue {
   private readonly jobLeaseMs: number;
   private readonly maxAttempts: number;
   private readonly now: () => Date;
 
   constructor(
-    private readonly filePath: string,
+    private readonly store: ProjectJobStore,
     options: {
-      lockTimeoutMs?: number;
-      lockStaleMs?: number;
       jobLeaseMs?: number;
       maxAttempts?: number;
       now?: () => Date;
     } = {}
   ) {
-    this.lockTimeoutMs = options.lockTimeoutMs ?? 5_000;
-    this.lockStaleMs = options.lockStaleMs ?? 300_000;
     this.jobLeaseMs = options.jobLeaseMs ?? 600_000;
     this.maxAttempts = options.maxAttempts ?? DEFAULT_JOB_MAX_ATTEMPTS;
     this.now = options.now ?? (() => new Date());
   }
 
   async enqueue(input: BootstrapProjectInput): Promise<ProjectJob> {
-    return this.withLock(async () => {
-      const jobs = await this.readAll();
-      const existingJob = findIdempotentJob(jobs, input.idempotencyKey);
-      if (existingJob) {
-        return existingJob;
-      }
-
-      const job = createProjectJob(input, this.now(), {
-        maxAttempts: this.maxAttempts
-      });
-      jobs.push(job);
-      await this.writeAll(jobs);
-      return job;
-    });
+    return this.store.insert(createProjectJob(input, this.now(), {
+      maxAttempts: this.maxAttempts
+    }));
   }
 
   async listByChat(chatId: number): Promise<ProjectJob[]> {
-    const jobs = await this.readAll();
-    return jobs
-      .filter((job) => job.chatId === chatId)
-      .sort((left, right) => right.queuedAt.localeCompare(left.queuedAt));
+    return this.store.listByChat(chatId);
   }
 
   async getByChat(chatId: number, jobId: string): Promise<ProjectJob | null> {
-    const jobs = await this.readAll();
-    return jobs.find((job) => job.chatId === chatId && job.id === jobId) ?? null;
+    return this.store.getByChat(chatId, jobId);
   }
 
   async claimNext(): Promise<ProjectJob | null> {
-    return this.withLock(async () => {
-      const jobs = recoverExpiredRunningJobs(await this.readAll(), this.now());
-      const index = jobs.findIndex((job) => job.status === "pending");
-      if (index === -1) {
-        await this.writeAll(jobs);
-        return null;
-      }
-
-      const claimed = {
-        ...jobs[index],
-        status: "running" as const,
-        startedAt: this.now().toISOString(),
-        leaseExpiresAt: leaseDeadline(this.now(), this.jobLeaseMs).toISOString(),
-        deadLetterAt: undefined,
-        error: undefined
-      };
-      jobs[index] = claimed;
-      await this.writeAll(jobs);
-      return claimed;
-    });
+    return this.store.claimNext(this.now(), this.jobLeaseMs);
   }
 
   async renew(jobId: string): Promise<ProjectJob> {
-    return this.withLock(async () => {
-      const jobs = await this.readAll();
-      const index = jobs.findIndex((job) => job.id === jobId);
-      if (index === -1) {
-        throw new Error(`Unknown project job: ${jobId}`);
-      }
-
-      const current = jobs[index];
-      if (current.status !== "running") {
-        return current;
-      }
-
-      const updated = {
-        ...current,
-        leaseExpiresAt: leaseDeadline(this.now(), this.jobLeaseMs).toISOString()
-      };
-      jobs[index] = updated;
-      await this.writeAll(jobs);
-      return updated;
-    });
+    return this.store.renew(jobId, leaseDeadline(this.now(), this.jobLeaseMs).toISOString());
   }
 
   async complete(jobId: string, project: BootstrappedProject): Promise<ProjectJob> {
-    return this.update(jobId, {
+    return this.store.update(jobId, {
       status: "completed",
       finishedAt: this.now().toISOString(),
       leaseExpiresAt: undefined,
@@ -395,7 +223,7 @@ export class FileProjectJobQueue implements ProjectJobQueue {
   }
 
   async fail(jobId: string, error: string): Promise<ProjectJob> {
-    return this.update(jobId, {
+    return this.store.update(jobId, {
       status: "failed",
       finishedAt: this.now().toISOString(),
       leaseExpiresAt: undefined,
@@ -404,8 +232,102 @@ export class FileProjectJobQueue implements ProjectJobQueue {
   }
 
   async retry(jobId: string, chatId: number): Promise<ProjectJob> {
-    return this.withLock(async () => {
-      const jobs = await this.readAll();
+    return this.store.retry(jobId, chatId, (job) => createProjectJob(
+      {
+        chatId,
+        description: job.description,
+        selectedModel: job.selectedModel
+      },
+      this.now(),
+      {
+        attempt: job.attempt + 1,
+        maxAttempts: job.maxAttempts,
+        rootJobId: job.rootJobId,
+        retryOfJobId: job.id
+      }
+    ));
+  }
+
+  async cancel(jobId: string, chatId: number): Promise<ProjectJob> {
+    return this.store.cancel(jobId, chatId, this.now().toISOString());
+  }
+}
+
+type ProjectJobMutation<T> = (jobs: ProjectJob[]) => Promise<{
+  jobs: ProjectJob[];
+  result: T;
+}>;
+
+abstract class ArrayProjectJobStore implements ProjectJobStore {
+  protected abstract snapshot(): Promise<ProjectJob[]>;
+  protected abstract mutate<T>(operation: ProjectJobMutation<T>): Promise<T>;
+
+  async insert(job: ProjectJob): Promise<ProjectJob> {
+    return this.mutate(async (jobs) => {
+      const existingJob = findIdempotentJob(jobs, job.idempotencyKey);
+      if (existingJob) {
+        return { jobs, result: existingJob };
+      }
+
+      return {
+        jobs: [...jobs, job],
+        result: job
+      };
+    });
+  }
+
+  async listByChat(chatId: number): Promise<ProjectJob[]> {
+    return (await this.snapshot())
+      .filter((job) => job.chatId === chatId)
+      .sort((left, right) => right.queuedAt.localeCompare(left.queuedAt));
+  }
+
+  async getByChat(chatId: number, jobId: string): Promise<ProjectJob | null> {
+    const jobs = await this.snapshot();
+    return jobs.find((job) => job.chatId === chatId && job.id === jobId) ?? null;
+  }
+
+  async claimNext(now: Date, leaseMs: number): Promise<ProjectJob | null> {
+    return this.mutate(async (storedJobs) => {
+      const jobs = recoverExpiredRunningJobs(storedJobs, now);
+      const index = jobs.findIndex((job) => job.status === "pending");
+      if (index === -1) {
+        return { jobs, result: null };
+      }
+
+      const claimed = {
+        ...jobs[index],
+        status: "running" as const,
+        startedAt: now.toISOString(),
+        leaseExpiresAt: leaseDeadline(now, leaseMs).toISOString(),
+        deadLetterAt: undefined,
+        error: undefined
+      };
+      jobs[index] = claimed;
+
+      return { jobs, result: claimed };
+    });
+  }
+
+  async renew(jobId: string, leaseExpiresAt: string): Promise<ProjectJob> {
+    return this.mutate(async (jobs) => {
+      const index = findJobIndex(jobs, jobId);
+      const current = jobs[index];
+      if (current.status !== "running") {
+        return { jobs, result: current };
+      }
+
+      const updated = {
+        ...current,
+        leaseExpiresAt
+      };
+      jobs[index] = updated;
+      return { jobs, result: updated };
+    });
+  }
+
+  async retry(jobId: string, chatId: number, createRetryJob: (job: ProjectJob) => ProjectJob): Promise<ProjectJob> {
+    return this.mutate(async (jobs) => {
       const job = jobs.find((item) => item.chatId === chatId && item.id === jobId);
       if (!job) {
         throw new Error(`Unknown project job: ${jobId}`);
@@ -415,29 +337,16 @@ export class FileProjectJobQueue implements ProjectJobQueue {
         throw new Error(`Job is not finished yet: ${jobId}`);
       }
 
-      const retriedJob = createProjectJob(
-        {
-          chatId,
-          description: job.description,
-          selectedModel: job.selectedModel
-        },
-        this.now(),
-        {
-          attempt: job.attempt + 1,
-          maxAttempts: job.maxAttempts,
-          rootJobId: job.rootJobId,
-          retryOfJobId: job.id
-        }
-      );
-      jobs.push(retriedJob);
-      await this.writeAll(jobs);
-      return retriedJob;
+      const retriedJob = createRetryJob(job);
+      return {
+        jobs: [...jobs, retriedJob],
+        result: retriedJob
+      };
     });
   }
 
-  async cancel(jobId: string, chatId: number): Promise<ProjectJob> {
-    return this.withLock(async () => {
-      const jobs = await this.readAll();
+  async cancel(jobId: string, chatId: number, finishedAt: string): Promise<ProjectJob> {
+    return this.mutate(async (jobs) => {
       const index = jobs.findIndex((job) => job.chatId === chatId && job.id === jobId);
       if (index === -1) {
         throw new Error(`Unknown project job: ${jobId}`);
@@ -445,40 +354,86 @@ export class FileProjectJobQueue implements ProjectJobQueue {
 
       const current = jobs[index];
       if (isTerminalJobStatus(current.status)) {
-        return current;
+        return { jobs, result: current };
       }
 
-      const now = this.now().toISOString();
       const cancelled = {
         ...current,
         status: "cancelled" as const,
-        finishedAt: now,
+        finishedAt,
         leaseExpiresAt: undefined,
-        cancelledAt: now,
+        cancelledAt: finishedAt,
         error: undefined
       };
       jobs[index] = cancelled;
-      await this.writeAll(jobs);
-      return cancelled;
+      return { jobs, result: cancelled };
     });
   }
 
-  private async update(jobId: string, patch: Partial<ProjectJob>): Promise<ProjectJob> {
-    return this.withLock(async () => {
-      const jobs = await this.readAll();
-      const index = jobs.findIndex((job) => job.id === jobId);
-      if (index === -1) {
-        throw new Error(`Unknown project job: ${jobId}`);
-      }
+  async update(jobId: string, patch: Partial<ProjectJob>): Promise<ProjectJob> {
+    return this.mutate(async (jobs) => {
+      const index = findJobIndex(jobs, jobId);
 
       if (isProtectedTerminalStatus(jobs[index].status) && isTerminalPatch(patch)) {
-        return jobs[index];
+        return { jobs, result: jobs[index] };
       }
 
       const updated = { ...jobs[index], ...patch };
       jobs[index] = updated;
-      await this.writeAll(jobs);
-      return updated;
+      return { jobs, result: updated };
+    });
+  }
+}
+
+export class InMemoryProjectJobStore extends ArrayProjectJobStore {
+  private jobs: ProjectJob[] = [];
+
+  protected async snapshot(): Promise<ProjectJob[]> {
+    return this.jobs.map(normalizeProjectJob);
+  }
+
+  protected async mutate<T>(operation: ProjectJobMutation<T>): Promise<T> {
+    const output = await operation(this.jobs.map(normalizeProjectJob));
+    this.jobs = output.jobs;
+    return output.result;
+  }
+}
+
+export class InMemoryProjectJobQueue extends StoredProjectJobQueue {
+  constructor(options: { jobLeaseMs?: number; maxAttempts?: number; now?: () => Date } = {}) {
+    super(new InMemoryProjectJobStore(), options);
+  }
+}
+
+export class FileProjectJobStore extends ArrayProjectJobStore {
+  private readonly lockTimeoutMs: number;
+  private readonly lockStaleMs: number;
+  private readonly now: () => Date;
+
+  constructor(
+    private readonly filePath: string,
+    options: {
+      lockTimeoutMs?: number;
+      lockStaleMs?: number;
+      now?: () => Date;
+    } = {}
+  ) {
+    super();
+    this.lockTimeoutMs = options.lockTimeoutMs ?? 5_000;
+    this.lockStaleMs = options.lockStaleMs ?? 300_000;
+    this.now = options.now ?? (() => new Date());
+  }
+
+  protected async snapshot(): Promise<ProjectJob[]> {
+    return this.readAll();
+  }
+
+  protected async mutate<T>(operation: ProjectJobMutation<T>): Promise<T> {
+    return this.withLock(async () => {
+      const jobs = await this.readAll();
+      const output = await operation(jobs);
+      await this.writeAll(output.jobs);
+      return output.result;
     });
   }
 
@@ -503,6 +458,32 @@ export class FileProjectJobQueue implements ProjectJobQueue {
     } finally {
       await release();
     }
+  }
+}
+
+export class FileProjectJobQueue extends StoredProjectJobQueue {
+  constructor(
+    filePath: string,
+    options: {
+      lockTimeoutMs?: number;
+      lockStaleMs?: number;
+      jobLeaseMs?: number;
+      maxAttempts?: number;
+      now?: () => Date;
+    } = {}
+  ) {
+    super(
+      new FileProjectJobStore(filePath, {
+        lockTimeoutMs: options.lockTimeoutMs,
+        lockStaleMs: options.lockStaleMs,
+        now: options.now
+      }),
+      {
+        jobLeaseMs: options.jobLeaseMs,
+        maxAttempts: options.maxAttempts,
+        now: options.now
+      }
+    );
   }
 }
 
@@ -1359,6 +1340,15 @@ function findIdempotentJob(jobs: ProjectJob[], idempotencyKey: string | undefine
   }
 
   return jobs.find((job) => job.idempotencyKey === idempotencyKey) ?? null;
+}
+
+function findJobIndex(jobs: ProjectJob[], jobId: string): number {
+  const index = jobs.findIndex((job) => job.id === jobId);
+  if (index === -1) {
+    throw new Error(`Unknown project job: ${jobId}`);
+  }
+
+  return index;
 }
 
 function normalizeProjectJob(job: ProjectJob): ProjectJob {
