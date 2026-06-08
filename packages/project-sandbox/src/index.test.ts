@@ -1,4 +1,4 @@
-import { access, chmod, link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -199,6 +199,7 @@ describe("ProjectSandbox", () => {
         network: "none",
         cpus: "1.5",
         memory: "512m",
+        storageSize: "2g",
         pidsLimit: 128
       },
       rootDir: "/tmp/project",
@@ -228,6 +229,8 @@ describe("ProjectSandbox", () => {
       "1.5",
       "--memory",
       "512m",
+      "--storage-opt",
+      "size=2g",
       "--pids-limit",
       "128",
       "--env",
@@ -241,6 +244,53 @@ describe("ProjectSandbox", () => {
       "test"
     ]);
     expect(spec.hostEnv).not.toHaveProperty("HEPHAESTUS_EXPLICIT_ENV");
+  });
+
+  it("builds a docker command spec with a quota-managed tmpfs workspace", () => {
+    const spec = buildCommandSpec({
+      runner: {
+        type: "docker",
+        image: "hephaestus/validation:latest",
+        network: "none",
+        workspaceDiskLimit: "64m"
+      },
+      rootDir: "/tmp/project",
+      command: "npm",
+      args: ["test"],
+      cwd: "frontend",
+      env: {
+        HOME: "/workspace/.hephaestus-home",
+        PATH: "/usr/bin"
+      }
+    });
+
+    expect(spec.command).toBe("docker");
+    expect(spec.args).toEqual([
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--mount",
+      "type=bind,src=/tmp/project,dst=/hephaestus-host-workspace",
+      "--mount",
+      "type=tmpfs,dst=/workspace,tmpfs-size=64m",
+      "-w",
+      "/workspace",
+      "--env",
+      "HOME=/workspace/.hephaestus-home",
+      "--env",
+      "PATH=/usr/bin",
+      "hephaestus/validation:latest",
+      "sh",
+      "-lc",
+      expect.stringContaining("cp -a \"$host_workspace/.\" \"$workspace/\""),
+      "hephaestus-quota-run",
+      "/hephaestus-host-workspace",
+      "/workspace",
+      "/workspace/frontend",
+      "npm",
+      "test"
+    ]);
   });
 
   it("allows per-run docker runner overrides", async () => {
@@ -271,6 +321,8 @@ describe("ProjectSandbox", () => {
         HEPHAESTUS_SANDBOX_NETWORK: "bridge",
         HEPHAESTUS_SANDBOX_CPUS: "2",
         HEPHAESTUS_SANDBOX_MEMORY: "1g",
+        HEPHAESTUS_SANDBOX_STORAGE_SIZE: "8g",
+        HEPHAESTUS_SANDBOX_WORKSPACE_DISK_LIMIT: "512m",
         HEPHAESTUS_SANDBOX_PIDS_LIMIT: "256"
       })
     ).toEqual({
@@ -282,6 +334,8 @@ describe("ProjectSandbox", () => {
       user: undefined,
       cpus: "2",
       memory: "1g",
+      storageSize: "8g",
+      workspaceDiskLimit: "512m",
       pidsLimit: 256
     });
   });
@@ -292,5 +346,34 @@ describe("ProjectSandbox", () => {
       HEPHAESTUS_SANDBOX_RUNNER: "docker",
       HEPHAESTUS_SANDBOX_PIDS_LIMIT: "0"
     })).toThrow("Invalid HEPHAESTUS_SANDBOX_PIDS_LIMIT");
+  });
+
+  it("prunes workspace artifacts outside the allowlist", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "hephaestus-sandbox-"));
+    const sandbox = new ProjectSandbox({ rootDir, allowedCommands: [] });
+
+    try {
+      await mkdir(join(rootDir, "backend", "tmp"), { recursive: true });
+      await mkdir(join(rootDir, "frontend"), { recursive: true });
+      await writeFile(join(rootDir, "README.md"), "# app\n", "utf8");
+      await writeFile(join(rootDir, "backend", "go.mod"), "module app\n", "utf8");
+      await writeFile(join(rootDir, "backend", "tmp", "scratch.txt"), "scratch\n", "utf8");
+      await writeFile(join(rootDir, "frontend", "debug.log"), "debug\n", "utf8");
+      await writeFile(join(rootDir, "secret.env"), "TOKEN=secret\n", "utf8");
+
+      const report = await sandbox.pruneArtifacts(["README.md", "backend/go.mod"]);
+
+      await expect(readFile(join(rootDir, "README.md"), "utf8")).resolves.toContain("# app");
+      await expect(readFile(join(rootDir, "backend", "go.mod"), "utf8")).resolves.toContain("module app");
+      await expect(access(join(rootDir, "backend", "tmp"))).rejects.toThrow();
+      await expect(access(join(rootDir, "frontend"))).rejects.toThrow();
+      await expect(access(join(rootDir, "secret.env"))).rejects.toThrow();
+      expect(report.keptPaths).toContain("README.md");
+      expect(report.keptPaths).toContain("backend");
+      expect(report.keptPaths).toContain("backend/go.mod");
+      expect(report.removedPaths).toEqual(["backend/tmp", "frontend", "secret.env"]);
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
   });
 });

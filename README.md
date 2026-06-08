@@ -145,7 +145,8 @@ export HEPHAESTUS_AVAILABLE_MODELS="qwen2.5-coder:7b|Qwen 7B|Быстрее,qwen
 - `HEPHAESTUS_SANDBOX_RUNNER=docker` — запуск validation-команд внутри Docker runner вместо host-runner
 - `HEPHAESTUS_SANDBOX_IMAGE` — образ для validation runner, по умолчанию `hephaestus/validation:local`
 - `HEPHAESTUS_SANDBOX_NETWORK` — network mode для validation runner, по умолчанию `none`
-- `HEPHAESTUS_SANDBOX_CPUS`, `HEPHAESTUS_SANDBOX_MEMORY`, `HEPHAESTUS_SANDBOX_PIDS_LIMIT` — базовые лимиты Docker runner
+- `HEPHAESTUS_SANDBOX_CPUS`, `HEPHAESTUS_SANDBOX_MEMORY`, `HEPHAESTUS_SANDBOX_PIDS_LIMIT`, `HEPHAESTUS_SANDBOX_STORAGE_SIZE` — базовые лимиты Docker runner; storage size передается как Docker `--storage-opt size=...`
+- `HEPHAESTUS_SANDBOX_WORKSPACE_DISK_LIMIT` — hard limit для исполняемого workspace: Docker runner запускает команду в tmpfs workspace указанного размера и синхронизирует результат обратно в project dir
 
 Для стандартной проверки generated-webapp Docker runner включает сеть только
 для dependency/download шагов (`go test` и `npm ci`/`npm install`). `docker

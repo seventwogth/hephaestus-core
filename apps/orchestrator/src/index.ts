@@ -13,7 +13,11 @@ import {
   generateGoBackend,
   generateReactFrontend
 } from "@hephaestus/project-generator";
-import { ProjectSandbox, type SandboxRunnerOptions } from "@hephaestus/project-sandbox";
+import {
+  type ArtifactRetentionReport,
+  ProjectSandbox,
+  type SandboxRunnerOptions
+} from "@hephaestus/project-sandbox";
 import {
   type ValidationCheck,
   type ValidationReport,
@@ -90,6 +94,8 @@ export interface BootstrapProjectOptions extends FixProjectStageOptions {
   runValidation?: boolean;
   autoFix?: boolean;
   runDocumentation?: boolean;
+  pruneArtifacts?: boolean;
+  artifactAllowlist?: string[];
 }
 
 export interface BootstrapProjectResult {
@@ -136,6 +142,7 @@ export interface GenerationReport {
     missingFromManifest: string[];
   };
   sandboxValidation: SandboxValidationSummary;
+  artifactRetention: ArtifactRetentionSummary;
 }
 
 export interface SandboxValidationSummary {
@@ -147,6 +154,13 @@ export interface SandboxValidationSummary {
   signaledCheckIds: string[];
   outputTruncatedCheckIds: string[];
   failureModes: string[];
+}
+
+export interface ArtifactRetentionSummary {
+  pruningRan: boolean;
+  allowedPaths: string[];
+  keptPathCount: number;
+  removedPaths: string[];
 }
 
 export class FileProjectStateStore implements ProjectStateStore {
@@ -249,9 +263,14 @@ export class Orchestrator {
       await this.documentProjectStage(projectDir);
     }
 
+    const artifactRetentionReport = (options.pruneArtifacts ?? true)
+      ? await this.pruneProjectArtifacts(projectDir, options.artifactAllowlist)
+      : undefined;
+
     await this.writeGenerationReport(projectDir, {
       noScaffold: options.noScaffold ?? false,
-      validationReport
+      validationReport,
+      artifactRetentionReport
     });
 
     return {
@@ -650,7 +669,11 @@ export class Orchestrator {
 
   async writeGenerationReport(
     projectDir: string,
-    options: { noScaffold?: boolean; validationReport?: ValidationReport } = {}
+    options: {
+      noScaffold?: boolean;
+      validationReport?: ValidationReport;
+      artifactRetentionReport?: ArtifactRetentionReport;
+    } = {}
   ): Promise<GenerationReport> {
     const runRecords = await readJsonLines(join(projectDir, "AGENT_RUNS.jsonl"));
     const manifestRecords = await readJsonLines(join(projectDir, "AGENT_MANIFESTS.jsonl"));
@@ -675,11 +698,22 @@ export class Orchestrator {
         coveredFiles,
         missingFromManifest
       },
-      sandboxValidation: buildSandboxValidationSummary(options.validationReport)
+      sandboxValidation: buildSandboxValidationSummary(options.validationReport),
+      artifactRetention: buildArtifactRetentionSummary(options.artifactRetentionReport)
     };
 
     await writeJson(join(projectDir, "GENERATION_REPORT.json"), report);
 
+    return report;
+  }
+
+  async pruneProjectArtifacts(
+    projectDir: string,
+    allowedPaths: string[] = DEFAULT_PROJECT_ARTIFACT_ALLOWLIST
+  ): Promise<ArtifactRetentionReport> {
+    const sandbox = new ProjectSandbox({ rootDir: projectDir, allowedCommands: [] });
+    const report = await sandbox.pruneArtifacts(allowedPaths);
+    await writeJson(join(projectDir, "ARTIFACT_RETENTION.json"), report);
     return report;
   }
 
@@ -991,6 +1025,30 @@ const NO_SCAFFOLD_ARTIFACT_CHECKS: ArtifactCompletenessCheck[] = [
   }
 ];
 
+const DEFAULT_PROJECT_ARTIFACT_ALLOWLIST = [
+  "REQUEST.md",
+  "SPEC.json",
+  "PLAN.json",
+  "TASKS.json",
+  "STATUS.json",
+  "openapi.json",
+  "backend",
+  "frontend",
+  "docker-compose.yml",
+  ".env.example",
+  ".gitignore",
+  "package.json",
+  "scripts",
+  "README.md",
+  "REVIEW.md",
+  "ARTIFACT_CHECKS.json",
+  "ARTIFACT_RETENTION.json",
+  "GENERATION_REPORT.json",
+  "AGENT_RUNS.jsonl",
+  "AGENT_MANIFESTS.jsonl",
+  "AGENT_STAGE_RETRIES.jsonl"
+];
+
 async function artifactPathExists(projectDir: string, path: string): Promise<boolean> {
   try {
     const pathStat = await stat(join(projectDir, path));
@@ -1217,6 +1275,24 @@ function buildSandboxValidationSummary(report?: ValidationReport): SandboxValida
     signaledCheckIds: [...signaledCheckIds].sort(),
     outputTruncatedCheckIds: [...outputTruncatedCheckIds].sort(),
     failureModes: [...failureModes].sort()
+  };
+}
+
+function buildArtifactRetentionSummary(report?: ArtifactRetentionReport): ArtifactRetentionSummary {
+  if (!report) {
+    return {
+      pruningRan: false,
+      allowedPaths: [],
+      keptPathCount: 0,
+      removedPaths: []
+    };
+  }
+
+  return {
+    pruningRan: true,
+    allowedPaths: report.allowedPaths,
+    keptPathCount: report.keptPaths.length,
+    removedPaths: report.removedPaths
   };
 }
 

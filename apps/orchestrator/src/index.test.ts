@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -174,7 +174,48 @@ describe("Orchestrator", () => {
         outputTruncatedCheckIds: ["runaway-build"],
         failureModes: ["command_failed", "output_truncated", "signal", "timeout"]
       });
+      expect(report.artifactRetention).toEqual({
+        pruningRan: false,
+        allowedPaths: [],
+        keptPathCount: 0,
+        removedPaths: []
+      });
       expect(reportJson).toContain("\"sandboxValidation\"");
+    } finally {
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("prunes non-allowlisted project artifacts before writing the generation report", async () => {
+    const projectDir = await mkdtemp(join(tmpdir(), "hephaestus-project-"));
+
+    try {
+      const orchestrator = new Orchestrator(new FileProjectStateStore());
+
+      await orchestrator.bootstrapProjectFromPrompt(
+        projectDir,
+        "Сделай сервис для учета книг.",
+        {
+          runDocumentation: false,
+          checks: [
+            {
+              id: "scratch-artifact",
+              title: "Scratch artifact",
+              command: process.execPath,
+              args: ["-e", "require('node:fs').writeFileSync('scratch.log', 'debug\\n')"],
+              cwd: ".",
+              required: true
+            }
+          ]
+        }
+      );
+
+      const report = JSON.parse(await readFile(join(projectDir, "GENERATION_REPORT.json"), "utf8"));
+
+      await expect(access(join(projectDir, "scratch.log"))).rejects.toThrow();
+      await expect(readFile(join(projectDir, "ARTIFACT_RETENTION.json"), "utf8")).resolves.toContain("scratch.log");
+      expect(report.artifactRetention.pruningRan).toBe(true);
+      expect(report.artifactRetention.removedPaths).toContain("scratch.log");
     } finally {
       await rm(projectDir, { recursive: true, force: true });
     }

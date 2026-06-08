@@ -15,6 +15,8 @@ export interface DockerSandboxRunnerOptions {
   user?: string;
   cpus?: string;
   memory?: string;
+  storageSize?: string;
+  workspaceDiskLimit?: string;
   pidsLimit?: number;
 }
 
@@ -27,6 +29,8 @@ export interface SandboxRunnerEnv {
   HEPHAESTUS_SANDBOX_USER?: string;
   HEPHAESTUS_SANDBOX_CPUS?: string;
   HEPHAESTUS_SANDBOX_MEMORY?: string;
+  HEPHAESTUS_SANDBOX_STORAGE_SIZE?: string;
+  HEPHAESTUS_SANDBOX_WORKSPACE_DISK_LIMIT?: string;
   HEPHAESTUS_SANDBOX_PIDS_LIMIT?: string;
 }
 
@@ -58,6 +62,13 @@ export interface SandboxOptions {
   env?: Record<string, string | undefined>;
   inheritEnv?: string[];
   runner?: SandboxRunnerOptions;
+}
+
+export interface ArtifactRetentionReport {
+  generatedAt: string;
+  allowedPaths: string[];
+  keptPaths: string[];
+  removedPaths: string[];
 }
 
 export class ProjectSandbox {
@@ -189,6 +200,24 @@ export class ProjectSandbox {
     for (const path of paths) {
       await this.removeRuntimeDir(path);
     }
+  }
+
+  async pruneArtifacts(allowedPaths: string[]): Promise<ArtifactRetentionReport> {
+    const allowedRelativePaths = normalizeAllowedArtifactPaths(this.rootDir, allowedPaths);
+    if (allowedRelativePaths.length === 0) {
+      throw new Error("Artifact allowlist must contain at least one path");
+    }
+
+    const removedPaths: string[] = [];
+    const keptPaths: string[] = [];
+    await this.pruneArtifactChildren(this.rootDir, "", allowedRelativePaths, keptPaths, removedPaths);
+
+    return {
+      generatedAt: new Date().toISOString(),
+      allowedPaths: allowedRelativePaths,
+      keptPaths: keptPaths.sort(),
+      removedPaths: removedPaths.sort()
+    };
   }
 
   resolveInsideRoot(path: string): string {
@@ -351,6 +380,41 @@ export class ProjectSandbox {
       throw new Error(`Hardlinked files are not allowed in sandbox: ${requestedPath}`);
     }
   }
+
+  private async pruneArtifactChildren(
+    directory: string,
+    relativeDirectory: string,
+    allowedRelativePaths: string[],
+    keptPaths: string[],
+    removedPaths: string[]
+  ): Promise<void> {
+    const entries = await readdir(directory, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+      const target = join(directory, entry.name);
+      const retention = getArtifactRetention(relativePath, allowedRelativePaths);
+
+      if (retention === "remove") {
+        await rm(target, { recursive: true, force: true });
+        removedPaths.push(relativePath);
+        continue;
+      }
+
+      if (retention === "keep") {
+        keptPaths.push(relativePath);
+        continue;
+      }
+
+      const info = await lstat(target);
+      if (info.isDirectory()) {
+        await this.pruneArtifactChildren(target, relativePath, allowedRelativePaths, keptPaths, removedPaths);
+        keptPaths.push(relativePath);
+      } else {
+        keptPaths.push(relativePath);
+      }
+    }
+  }
 }
 
 export interface CommandSpecInput {
@@ -384,18 +448,33 @@ export function buildCommandSpec(input: CommandSpecInput): CommandSpec {
   }
 
   const workspaceMount = input.runner.workspaceMount ?? DEFAULT_CONTAINER_WORKSPACE;
+  const hostWorkspaceMount = DEFAULT_CONTAINER_HOST_WORKSPACE;
   const network = input.runner.network ?? "none";
   const containerCwd = toContainerPath(workspaceMount, input.cwd);
   const dockerArgs = [
     "run",
     "--rm",
     "--network",
-    network,
-    "--mount",
-    `type=bind,src=${input.rootDir},dst=${workspaceMount}`,
-    "-w",
-    containerCwd
+    network
   ];
+
+  if (input.runner.workspaceDiskLimit) {
+    dockerArgs.push(
+      "--mount",
+      `type=bind,src=${input.rootDir},dst=${hostWorkspaceMount}`,
+      "--mount",
+      `type=tmpfs,dst=${workspaceMount},tmpfs-size=${input.runner.workspaceDiskLimit}`,
+      "-w",
+      workspaceMount
+    );
+  } else {
+    dockerArgs.push(
+      "--mount",
+      `type=bind,src=${input.rootDir},dst=${workspaceMount}`,
+      "-w",
+      containerCwd
+    );
+  }
 
   if (input.runner.user) {
     dockerArgs.push("--user", input.runner.user);
@@ -409,6 +488,10 @@ export function buildCommandSpec(input: CommandSpecInput): CommandSpec {
     dockerArgs.push("--memory", input.runner.memory);
   }
 
+  if (input.runner.storageSize) {
+    dockerArgs.push("--storage-opt", `size=${input.runner.storageSize}`);
+  }
+
   if (input.runner.pidsLimit !== undefined) {
     dockerArgs.push("--pids-limit", String(input.runner.pidsLimit));
   }
@@ -417,7 +500,22 @@ export function buildCommandSpec(input: CommandSpecInput): CommandSpec {
     dockerArgs.push("--env", `${name}=${value}`);
   }
 
-  dockerArgs.push(input.runner.image, input.command, ...input.args);
+  if (input.runner.workspaceDiskLimit) {
+    dockerArgs.push(
+      input.runner.image,
+      "sh",
+      "-lc",
+      QUOTA_WORKSPACE_SCRIPT,
+      "hephaestus-quota-run",
+      hostWorkspaceMount,
+      workspaceMount,
+      containerCwd,
+      input.command,
+      ...input.args
+    );
+  } else {
+    dockerArgs.push(input.runner.image, input.command, ...input.args);
+  }
 
   return {
     command: input.runner.dockerCommand ?? "docker",
@@ -430,7 +528,22 @@ export function buildCommandSpec(input: CommandSpecInput): CommandSpec {
 }
 
 const DEFAULT_CONTAINER_WORKSPACE = "/workspace";
+const DEFAULT_CONTAINER_HOST_WORKSPACE = "/hephaestus-host-workspace";
 const DEFAULT_VALIDATION_IMAGE = "hephaestus/validation:local";
+const QUOTA_WORKSPACE_SCRIPT = [
+  "set -u",
+  "host_workspace=\"$1\"",
+  "workspace=\"$2\"",
+  "cwd=\"$3\"",
+  "shift 3",
+  "cp -a \"$host_workspace/.\" \"$workspace/\" || exit 125",
+  "cd \"$cwd\" || exit 125",
+  "\"$@\"",
+  "status=$?",
+  "cd \"$workspace\" || exit \"$status\"",
+  "cp -a . \"$host_workspace/\" || exit 125",
+  "exit \"$status\""
+].join("; ");
 
 export function parseSandboxRunnerFromEnv(env: SandboxRunnerEnv = process.env): SandboxRunnerOptions | undefined {
   const runner = env.HEPHAESTUS_SANDBOX_RUNNER?.trim().toLowerCase();
@@ -451,8 +564,51 @@ export function parseSandboxRunnerFromEnv(env: SandboxRunnerEnv = process.env): 
     user: optionalTrimmed(env.HEPHAESTUS_SANDBOX_USER),
     cpus: optionalTrimmed(env.HEPHAESTUS_SANDBOX_CPUS),
     memory: optionalTrimmed(env.HEPHAESTUS_SANDBOX_MEMORY),
+    storageSize: optionalTrimmed(env.HEPHAESTUS_SANDBOX_STORAGE_SIZE),
+    workspaceDiskLimit: optionalTrimmed(env.HEPHAESTUS_SANDBOX_WORKSPACE_DISK_LIMIT),
     pidsLimit: parseOptionalPositiveInteger("HEPHAESTUS_SANDBOX_PIDS_LIMIT", env.HEPHAESTUS_SANDBOX_PIDS_LIMIT)
   };
+}
+
+function normalizeAllowedArtifactPaths(rootDir: string, paths: string[]): string[] {
+  const root = resolve(rootDir);
+  const normalizedPaths = new Set<string>();
+
+  for (const path of paths) {
+    const trimmed = path.trim().replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
+    if (!trimmed || trimmed === ".") {
+      throw new Error(`Invalid artifact allowlist path: ${path}`);
+    }
+
+    const target = resolve(root, trimmed);
+    const relation = relative(root, target);
+    if (relation === "" || relation.startsWith("..") || relation.startsWith("/")) {
+      throw new Error(`Artifact allowlist path escapes project root: ${path}`);
+    }
+
+    normalizedPaths.add(relation.split("\\").join("/"));
+  }
+
+  return [...normalizedPaths].sort();
+}
+
+function getArtifactRetention(
+  relativePath: string,
+  allowedRelativePaths: string[]
+): "keep" | "descend" | "remove" {
+  let shouldDescend = false;
+
+  for (const allowedPath of allowedRelativePaths) {
+    if (relativePath === allowedPath || relativePath.startsWith(`${allowedPath}/`)) {
+      return "keep";
+    }
+
+    if (allowedPath.startsWith(`${relativePath}/`)) {
+      shouldDescend = true;
+    }
+  }
+
+  return shouldDescend ? "descend" : "remove";
 }
 
 function copyEnvIfSet(env: Record<string, string>, name: string): void {

@@ -74,12 +74,18 @@ failed checks, timeouts, signals и output truncation. Поведение пок
 на path traversal, symlink, hardlink, timeout, output limit, cleanup, command
 allowlist edge cases, generation report failure summary и Docker runner command
 interface. Docker runner уже умеет формировать запуск с bind-mounted workspace,
-controlled env, network mode и базовыми CPU/memory/pids параметрами. Добавлен
-validation image `hephaestus/validation:local`, CI проверяет его сборку, а
-CLI/Telegram worker могут включать Docker runner через `HEPHAESTUS_SANDBOX_*`.
+controlled env, network mode, CPU/memory/pids параметрами и storage limit для
+container writable layer. Для production validation runner доступен
+quota-managed tmpfs workspace: проект копируется внутрь workspace с hard disk
+limit, команда выполняется там, а результат синхронизируется обратно в project
+dir после завершения. Добавлен validation image `hephaestus/validation:local`,
+CI проверяет его сборку, а CLI/Telegram worker могут включать Docker runner
+через `HEPHAESTUS_SANDBOX_*`.
 Для generated-webapp validation добавлена per-check network policy: dependency
-шаги получают `bridge`, остальные validation checks получают `none`. Не
-закрыто: disk limits и artifact allowlist после завершения job.
+шаги получают `bridge`, остальные validation checks получают `none`. После
+bootstrap workspace чистится по artifact allowlist, а результат retention
+попадает в `ARTIFACT_RETENTION.json` и `GENERATION_REPORT.json`. Следующий
+инженерный фокус — Фаза 2, durable queue и job lifecycle.
 
 Работы:
 

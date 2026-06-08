@@ -32,6 +32,16 @@ GitHub Actions запускает production-readiness baseline на Ubuntu:
 - Docker sandbox runner включается через `HEPHAESTUS_SANDBOX_RUNNER=docker`.
   По умолчанию используется host runner, чтобы local/dev flow не требовал
   validation image.
+- Docker runner принимает `HEPHAESTUS_SANDBOX_CPUS`,
+  `HEPHAESTUS_SANDBOX_MEMORY`, `HEPHAESTUS_SANDBOX_PIDS_LIMIT` и
+  `HEPHAESTUS_SANDBOX_STORAGE_SIZE`; storage size применяется как Docker
+  `--storage-opt size=...` для writable layer контейнера.
+- `HEPHAESTUS_SANDBOX_WORKSPACE_DISK_LIMIT` включает hard quota для
+  исполняемого workspace: runner монтирует tmpfs указанного размера, копирует
+  туда project dir перед командой и синхронизирует результат обратно после
+  завершения.
 - Для стандартного generated-webapp validation Docker runner использует
   per-check network policy: dependency/download checks получают `bridge`,
   остальные checks получают `none`.
+- После bootstrap оркестратор чистит workspace по artifact allowlist и пишет
+  результат в `ARTIFACT_RETENTION.json` и `GENERATION_REPORT.json`.
