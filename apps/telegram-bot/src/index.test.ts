@@ -85,7 +85,8 @@ function projectJob(overrides: Partial<ProjectJob> = {}): ProjectJob {
     attempt: 1,
     maxAttempts: 3,
     rootJobId: "job-1",
-    ...overrides
+    ...overrides,
+    generationMode: overrides.generationMode ?? "template"
   };
 }
 
@@ -95,6 +96,7 @@ function jobRow(overrides: Record<string, unknown> = {}): Record<string, unknown
     chat_id: 100,
     description: "Создай сервис книг",
     selected_model: { id: "quality", label: "Quality" } satisfies ModelOption,
+    generation_mode: "template",
     status: "pending",
     queued_at: "2026-01-01T00:00:00.000Z",
     attempt: 1,
@@ -214,8 +216,20 @@ describe("HephaestusTelegramBot", () => {
         }
       }
     });
-    const messageActions = await bot.handleUpdate({
+    const modeActions = await bot.handleUpdate({
       update_id: 2,
+      callback_query: {
+        id: "cb-2",
+        data: "select_generation_mode:no-scaffold",
+        message: {
+          message_id: 10,
+          chat: { id: 100 },
+          text: "/new"
+        }
+      }
+    });
+    const messageActions = await bot.handleUpdate({
+      update_id: 3,
       message: {
         message_id: 11,
         chat: { id: 100 },
@@ -230,11 +244,17 @@ describe("HephaestusTelegramBot", () => {
     const jobs = await jobQueue.listByChat(100);
     selectedModelId = jobs[0]?.selectedModel.id ?? null;
     expect(jobs[0]?.status).toBe("pending");
+    expect(jobs[0]?.generationMode).toBe("no-scaffold");
     expect(messageActions[0]).toMatchObject({
       type: "sendMessage",
       chatId: 100
     });
+    expect(modeActions[0]).toMatchObject({
+      type: "answerCallbackQuery",
+      callbackQueryId: "cb-2"
+    });
     expect(messageActions[0]?.text).toContain("Модель: Quality");
+    expect(messageActions[0]?.text).toContain("Режим: no-scaffold");
     expect(messageActions[0]?.text).toContain("поставлен в очередь");
   });
 
@@ -254,7 +274,8 @@ describe("HephaestusTelegramBot", () => {
     await jobQueue.complete(job.id, {
       projectDir: "/tmp/book-tracker",
       projectName: "book-tracker",
-      selectedModel: { id: "quality", label: "Quality" }
+      selectedModel: { id: "quality", label: "Quality" },
+      generationMode: "template"
     });
 
     const detailActions = await bot.handleUpdate({
@@ -439,12 +460,14 @@ describe("persistent Telegram bot state", () => {
       const job = await queue.enqueue({
         chatId: 100,
         description: "Создай сервис книг",
-        selectedModel: { id: "quality", label: "Quality" }
+        selectedModel: { id: "quality", label: "Quality" },
+        generationMode: "no-scaffold"
       });
 
       await expect(new FileProjectJobStore(filePath).getByChat(100, job.id)).resolves.toMatchObject({
         id: job.id,
-        status: "pending"
+        status: "pending",
+        generationMode: "no-scaffold"
       });
     } finally {
       await rm(rootDir, { recursive: true, force: true });
@@ -461,6 +484,8 @@ describe("persistent Telegram bot state", () => {
     await store.migrate();
 
     expect(pool.queries[0]?.text).toContain("CREATE TABLE IF NOT EXISTS \"telegram\".\"project_jobs\"");
+    expect(pool.queries[0]?.text).toContain("generation_mode text NOT NULL DEFAULT 'template'");
+    expect(pool.queries[0]?.text).toContain("ADD COLUMN IF NOT EXISTS generation_mode");
     expect(pool.queries[0]?.text).toContain("CREATE UNIQUE INDEX IF NOT EXISTS \"project_jobs_idempotency_key_idx\"");
     expect(pool.queries[0]?.text).toContain("WHERE idempotency_key IS NOT NULL");
     expect(pool.queries[0]?.text).toContain("\"project_jobs_lease_idx\"");
@@ -481,6 +506,7 @@ describe("persistent Telegram bot state", () => {
         rows: [jobRow({
           id: "job-1",
           selected_model: selectedModel,
+          generation_mode: "no-scaffold",
           idempotency_key: "chat-100-message-42"
         })]
       }
@@ -490,16 +516,19 @@ describe("persistent Telegram bot state", () => {
     const inserted = await store.insert(projectJob({
       id: "job-1",
       selectedModel,
+      generationMode: "no-scaffold",
       idempotencyKey: "chat-100-message-42"
     }));
 
     expect(inserted).toMatchObject({
       id: "job-1",
       selectedModel,
+      generationMode: "no-scaffold",
       idempotencyKey: "chat-100-message-42"
     });
     expect(pool.queries[0]?.text).toContain("ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL");
     expect(pool.queries[0]?.values?.[3]).toBe(JSON.stringify(selectedModel));
+    expect(pool.queries[0]?.values?.[4]).toBe("no-scaffold");
   });
 
   it("claims Postgres jobs transactionally with lease recovery and skip-locked selection", async () => {
@@ -639,6 +668,7 @@ describe("ProjectJobRunner", () => {
   it("runs queued jobs and notifies Telegram on success", async () => {
     const jobQueue = new InMemoryProjectJobQueue();
     const messages: string[] = [];
+    let receivedGenerationMode: string | undefined;
     const api: TelegramApi = {
       async getUpdates() {
         return [];
@@ -650,24 +680,29 @@ describe("ProjectJobRunner", () => {
     };
     const bootstrapper: ProjectBootstrapper = {
       async bootstrap(input) {
+        receivedGenerationMode = input.generationMode;
         return {
           projectDir: "/tmp/project",
           projectName: "book-tracker",
-          selectedModel: input.selectedModel
+          selectedModel: input.selectedModel,
+          generationMode: input.generationMode ?? "template"
         };
       }
     };
     await jobQueue.enqueue({
       chatId: 100,
       description: "Создай сервис книг",
-      selectedModel: { id: "quality", label: "Quality" }
+      selectedModel: { id: "quality", label: "Quality" },
+      generationMode: "no-scaffold"
     });
 
     const runner = new ProjectJobRunner(jobQueue, bootstrapper, api);
     const job = await runner.runNext();
 
     expect(job?.status).toBe("completed");
+    expect(receivedGenerationMode).toBe("no-scaffold");
     expect(messages.some((message) => message.includes("Запущена генерация проекта"))).toBe(true);
+    expect(messages.some((message) => message.includes("Режим: no-scaffold"))).toBe(true);
     expect(messages.some((message) => message.includes("Проект создан"))).toBe(true);
   });
 
@@ -692,7 +727,8 @@ describe("ProjectJobRunner", () => {
         return {
           projectDir: "/tmp/project",
           projectName: "book-tracker",
-          selectedModel: input.selectedModel
+          selectedModel: input.selectedModel,
+          generationMode: input.generationMode ?? "template"
         };
       }
     };
@@ -764,7 +800,8 @@ describe("TelegramPollingRuntime", () => {
               return {
                 projectDir: "/tmp/project",
                 projectName: "book-tracker",
-                selectedModel: input.selectedModel
+                selectedModel: input.selectedModel,
+                generationMode: input.generationMode ?? "template"
               };
             }
           },

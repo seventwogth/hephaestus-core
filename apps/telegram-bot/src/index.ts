@@ -20,6 +20,8 @@ export interface ModelOption {
   description?: string;
 }
 
+export type GenerationMode = "template" | "no-scaffold";
+
 export interface TelegramChat {
   id: number;
 }
@@ -68,8 +70,9 @@ export type TelegramBotAction = SendMessageAction | AnswerCallbackQueryAction;
 
 export interface TelegramSession {
   chatId: number;
-  stage: "idle" | "awaiting_model" | "awaiting_description";
+  stage: "idle" | "awaiting_model" | "awaiting_generation_mode" | "awaiting_description";
   selectedModelId?: string;
+  selectedGenerationMode?: GenerationMode;
 }
 
 export interface TelegramSessionStore {
@@ -112,6 +115,7 @@ export interface BootstrapProjectInput {
   chatId: number;
   description: string;
   selectedModel: ModelOption;
+  generationMode?: GenerationMode;
   idempotencyKey?: string;
 }
 
@@ -119,6 +123,7 @@ export interface BootstrappedProject {
   projectDir: string;
   projectName: string;
   selectedModel: ModelOption;
+  generationMode: GenerationMode;
 }
 
 export interface ProjectBootstrapper {
@@ -132,6 +137,7 @@ export interface ProjectJob {
   chatId: number;
   description: string;
   selectedModel: ModelOption;
+  generationMode: GenerationMode;
   status: ProjectJobStatus;
   queuedAt: string;
   attempt: number;
@@ -254,7 +260,8 @@ export class StoredProjectJobQueue implements ProjectJobQueue {
       {
         chatId,
         description: job.description,
-        selectedModel: job.selectedModel
+        selectedModel: job.selectedModel,
+        generationMode: job.generationMode
       },
       this.now(),
       {
@@ -510,6 +517,7 @@ interface ProjectJobRow extends QueryResultRow {
   chat_id: string | number;
   description: string;
   selected_model: ModelOption | string;
+  generation_mode?: GenerationMode | string | null;
   status: ProjectJobStatus;
   queued_at: Date | string;
   attempt: number;
@@ -551,6 +559,7 @@ export class PostgresProjectJobStore implements ProjectJobStore {
         chat_id bigint NOT NULL,
         description text NOT NULL,
         selected_model jsonb NOT NULL,
+        generation_mode text NOT NULL DEFAULT 'template' CHECK (generation_mode IN ('template', 'no-scaffold')),
         status text NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed', 'cancelled', 'dead_letter')),
         queued_at timestamptz NOT NULL,
         attempt integer NOT NULL CHECK (attempt > 0),
@@ -567,6 +576,16 @@ export class PostgresProjectJobStore implements ProjectJobStore {
         project_name text,
         error text
       );
+
+      ALTER TABLE ${this.tableName}
+        ADD COLUMN IF NOT EXISTS generation_mode text NOT NULL DEFAULT 'template';
+
+      ALTER TABLE ${this.tableName}
+        DROP CONSTRAINT IF EXISTS ${this.indexPrefix}_generation_mode_check;
+
+      ALTER TABLE ${this.tableName}
+        ADD CONSTRAINT ${this.indexName("generation_mode_check")}
+        CHECK (generation_mode IN ('template', 'no-scaffold'));
 
       CREATE UNIQUE INDEX IF NOT EXISTS ${this.indexName("idempotency_key_idx")}
         ON ${this.tableName} (idempotency_key)
@@ -598,6 +617,7 @@ export class PostgresProjectJobStore implements ProjectJobStore {
           chat_id,
           description,
           selected_model,
+          generation_mode,
           status,
           queued_at,
           attempt,
@@ -616,7 +636,7 @@ export class PostgresProjectJobStore implements ProjectJobStore {
         )
         VALUES (
           $1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10,
-          $11, $12, $13, $14, $15, $16, $17, $18, $19
+          $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
         )
         ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL
         DO UPDATE SET idempotency_key = EXCLUDED.idempotency_key
@@ -748,6 +768,7 @@ export class PostgresProjectJobStore implements ProjectJobStore {
             chat_id,
             description,
             selected_model,
+            generation_mode,
             status,
             queued_at,
             attempt,
@@ -766,7 +787,7 @@ export class PostgresProjectJobStore implements ProjectJobStore {
           )
           VALUES (
             $1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10,
-            $11, $12, $13, $14, $15, $16, $17, $18, $19
+            $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
           )
           RETURNING *
         `,
@@ -914,6 +935,11 @@ export class LocalProjectBootstrapper implements ProjectBootstrapper {
   async bootstrap(input: BootstrapProjectInput): Promise<BootstrappedProject> {
     await mkdir(this.options.outputRoot, { recursive: true });
     const provider = this.options.createModelProvider?.(input.selectedModel);
+    const generationMode = normalizeGenerationMode(input.generationMode);
+    if (!provider && generationMode === "no-scaffold") {
+      throw new Error("No-scaffold generation requires a configured ModelProvider");
+    }
+
     const speculativeSpec = analyzeRequirements({ text: input.description });
     const projectDir = resolve(
       this.options.outputRoot,
@@ -924,7 +950,10 @@ export class LocalProjectBootstrapper implements ProjectBootstrapper {
       ? await orchestrator.bootstrapProjectFromPrompt(
           projectDir,
           input.description,
-          this.options.bootstrapOptions
+          {
+            ...this.options.bootstrapOptions,
+            noScaffold: generationMode === "no-scaffold"
+          }
         )
       : await bootstrapDeterministicProject(orchestrator, projectDir, input.description);
     const spec = "spec" in result ? result.spec : result;
@@ -934,6 +963,7 @@ export class LocalProjectBootstrapper implements ProjectBootstrapper {
       `${JSON.stringify(
         {
           selectedModel: input.selectedModel,
+          generationMode,
           chatId: input.chatId,
           runtime: resolveModelRuntime(input.selectedModel),
           createdAt: new Date().toISOString()
@@ -947,7 +977,8 @@ export class LocalProjectBootstrapper implements ProjectBootstrapper {
     return {
       projectDir,
       projectName: spec.projectName,
-      selectedModel: input.selectedModel
+      selectedModel: input.selectedModel,
+      generationMode
     };
   }
 }
@@ -1059,7 +1090,11 @@ export class HephaestusTelegramBot {
         return [
           sendMessage(
             message.chat.id,
-            [`Повтор поставлен в очередь: ${job.id}`, `Модель: ${job.selectedModel.label}`].join("\n")
+            [
+              `Повтор поставлен в очередь: ${job.id}`,
+              `Модель: ${job.selectedModel.label}`,
+              `Режим: ${renderGenerationMode(job.generationMode)}`
+            ].join("\n")
           )
         ];
       } catch (error) {
@@ -1068,21 +1103,28 @@ export class HephaestusTelegramBot {
     }
 
     const session = await this.options.sessionStore.read(message.chat.id);
+    if (session?.stage === "awaiting_generation_mode") {
+      return [sendMessage(message.chat.id, "Сначала выбери режим генерации.", generationModeKeyboard())];
+    }
+
     if (!session || session.stage !== "awaiting_description" || !session.selectedModelId) {
       return [sendMessage(message.chat.id, "Сначала вызови /new и выбери модель.")];
     }
 
     const selectedModel = requireModel(this.options.models, session.selectedModelId);
+    const generationMode = normalizeGenerationMode(session.selectedGenerationMode);
     const job = await this.options.jobQueue.enqueue({
       chatId: message.chat.id,
       description: text,
-      selectedModel
+      selectedModel,
+      generationMode
     });
 
     await this.options.sessionStore.write({
       chatId: message.chat.id,
       stage: "idle",
-      selectedModelId: selectedModel.id
+      selectedModelId: selectedModel.id,
+      selectedGenerationMode: generationMode
     });
 
     return [
@@ -1091,6 +1133,7 @@ export class HephaestusTelegramBot {
         [
           `Проект поставлен в очередь: ${job.id}`,
           `Модель: ${selectedModel.label}`,
+          `Режим: ${renderGenerationMode(generationMode)}`,
           "Когда генерация завершится, бот пришлет отдельное сообщение со статусом и директорией проекта."
         ].join("\n")
       )
@@ -1101,6 +1144,10 @@ export class HephaestusTelegramBot {
     const chatId = query.message?.chat.id;
     if (!chatId) {
       return [];
+    }
+
+    if (query.data?.startsWith("select_generation_mode:")) {
+      return this.handleGenerationModeSelection(query, chatId);
     }
 
     if (!query.data?.startsWith("select_model:")) {
@@ -1127,7 +1174,7 @@ export class HephaestusTelegramBot {
 
     await this.options.sessionStore.write({
       chatId,
-      stage: "awaiting_description",
+      stage: "awaiting_generation_mode",
       selectedModelId: selectedModel.id
     });
 
@@ -1141,6 +1188,61 @@ export class HephaestusTelegramBot {
         chatId,
         [
           `Модель выбрана: ${selectedModel.label}.`,
+          "Выбери режим генерации."
+        ].join("\n"),
+        generationModeKeyboard()
+      )
+    ];
+  }
+
+  private async handleGenerationModeSelection(
+    query: TelegramCallbackQuery,
+    chatId: number
+  ): Promise<TelegramBotAction[]> {
+    const generationMode = parseGenerationModeCallback(query.data);
+    if (!generationMode) {
+      return [
+        {
+          type: "answerCallbackQuery",
+          callbackQueryId: query.id,
+          text: "Режим не найден"
+        }
+      ];
+    }
+
+    const session = await this.options.sessionStore.read(chatId);
+    if (!session?.selectedModelId) {
+      await this.options.sessionStore.write({
+        chatId,
+        stage: "awaiting_model"
+      });
+      return [
+        {
+          type: "answerCallbackQuery",
+          callbackQueryId: query.id,
+          text: "Сначала выбери модель"
+        },
+        sendMessage(chatId, "Сначала вызови /new и выбери модель.")
+      ];
+    }
+
+    await this.options.sessionStore.write({
+      chatId,
+      stage: "awaiting_description",
+      selectedModelId: session.selectedModelId,
+      selectedGenerationMode: generationMode
+    });
+
+    return [
+      {
+        type: "answerCallbackQuery",
+        callbackQueryId: query.id,
+        text: `Выбран режим: ${renderGenerationMode(generationMode)}`
+      },
+      sendMessage(
+        chatId,
+        [
+          `Режим выбран: ${renderGenerationMode(generationMode)}.`,
           "Теперь отправь текстовое описание проекта одним сообщением."
         ].join("\n")
       )
@@ -1284,14 +1386,19 @@ export class ProjectJobRunner {
       await this.api.sendMessage(
         sendMessage(
           job.chatId,
-          [`Запущена генерация проекта: ${job.id}`, `Модель: ${job.selectedModel.label}`].join("\n")
+          [
+            `Запущена генерация проекта: ${job.id}`,
+            `Модель: ${job.selectedModel.label}`,
+            `Режим: ${renderGenerationMode(job.generationMode)}`
+          ].join("\n")
         )
       );
 
       const project = await this.bootstrapper.bootstrap({
         chatId: job.chatId,
         description: job.description,
-        selectedModel: job.selectedModel
+        selectedModel: job.selectedModel,
+        generationMode: job.generationMode
       });
       const completedJob = await this.queue.complete(job.id, project);
       if (completedJob.status === "cancelled") {
@@ -1314,6 +1421,7 @@ export class ProjectJobRunner {
             `Проект создан: ${project.projectName}`,
             `Задание: ${completedJob.id}`,
             `Модель: ${project.selectedModel.label}`,
+            `Режим: ${renderGenerationMode(project.generationMode)}`,
             `Директория: ${project.projectDir}`
           ].join("\n")
         )
@@ -1444,7 +1552,7 @@ function renderJobStatus(jobs: ProjectJob[]): string {
     "Последние задания:",
     ...jobs.slice(0, 5).map((job) => {
       const details = job.projectDir ? ` — ${job.projectDir}` : job.error ? ` — ${job.error}` : "";
-      return `- ${job.id}: ${translateJobStatus(job.status)} (${job.selectedModel.label})${details}`;
+      return `- ${job.id}: ${translateJobStatus(job.status)} (${job.selectedModel.label}, ${renderGenerationMode(job.generationMode)})${details}`;
     }),
     "",
     "Команды: /job <id>, /last, /cancel <id>, /retry <id>"
@@ -1456,6 +1564,7 @@ function renderJobDetails(job: ProjectJob): string {
     `Задание: ${job.id}`,
     `Статус: ${translateJobStatus(job.status)}`,
     `Модель: ${job.selectedModel.label}`,
+    `Режим: ${renderGenerationMode(job.generationMode)}`,
     `Попытка: ${job.attempt}/${job.maxAttempts}`,
     `Создано: ${job.queuedAt}`,
     job.rootJobId !== job.id ? `Корневое задание: ${job.rootJobId}` : null,
@@ -1481,6 +1590,7 @@ function renderLastProject(jobs: ProjectJob[]): string {
     `Последний готовый проект: ${completedJob.projectName ?? completedJob.id}`,
     `Задание: ${completedJob.id}`,
     `Модель: ${completedJob.selectedModel.label}`,
+    `Режим: ${renderGenerationMode(completedJob.generationMode)}`,
     `Директория: ${completedJob.projectDir}`
   ].join("\n");
 }
@@ -1540,6 +1650,49 @@ function requireModel(models: ModelOption[], modelId: string): ModelOption {
   return model;
 }
 
+function generationModeKeyboard(): InlineKeyboardMarkup {
+  return {
+    inline_keyboard: [
+      [
+        {
+          text: "Template — быстрее и стабильнее",
+          callback_data: "select_generation_mode:template"
+        }
+      ],
+      [
+        {
+          text: "No-scaffold — с нуля",
+          callback_data: "select_generation_mode:no-scaffold"
+        }
+      ]
+    ]
+  };
+}
+
+function parseGenerationModeCallback(data: string | undefined): GenerationMode | null {
+  if (!data?.startsWith("select_generation_mode:")) {
+    return null;
+  }
+
+  return parseGenerationMode(data.slice("select_generation_mode:".length));
+}
+
+function parseGenerationMode(value: string | undefined): GenerationMode | null {
+  if (value === "template" || value === "no-scaffold") {
+    return value;
+  }
+
+  return null;
+}
+
+function normalizeGenerationMode(value: GenerationMode | string | undefined): GenerationMode {
+  return parseGenerationMode(value) ?? "template";
+}
+
+function renderGenerationMode(mode: GenerationMode): string {
+  return mode === "no-scaffold" ? "no-scaffold" : "template";
+}
+
 function sendMessage(
   chatId: number,
   text: string,
@@ -1584,6 +1737,7 @@ function createProjectJob(
     chatId: input.chatId,
     description: input.description,
     selectedModel: input.selectedModel,
+    generationMode: normalizeGenerationMode(input.generationMode),
     status: "pending",
     queuedAt: now,
     attempt: Math.max(1, options.attempt ?? 1),
@@ -1629,6 +1783,7 @@ function projectJobValues(job: ProjectJob): unknown[] {
     job.chatId,
     job.description,
     JSON.stringify(job.selectedModel),
+    job.generationMode,
     job.status,
     job.queuedAt,
     job.attempt,
@@ -1653,6 +1808,7 @@ function projectJobFromRow(row: ProjectJobRow): ProjectJob {
     chatId: Number(row.chat_id),
     description: row.description,
     selectedModel: parseSelectedModel(row.selected_model),
+    generationMode: normalizeGenerationMode(row.generation_mode ?? undefined),
     status: row.status,
     queuedAt: toIsoString(row.queued_at),
     attempt: row.attempt,
@@ -1692,6 +1848,7 @@ function firstRow<R extends QueryResultRow>(result: QueryResult<R>, operation: s
 }
 
 const PROJECT_JOB_PATCH_COLUMNS = {
+  generationMode: "generation_mode",
   status: "status",
   queuedAt: "queued_at",
   attempt: "attempt",
@@ -1863,6 +2020,7 @@ function normalizeProjectJob(job: ProjectJob): ProjectJob {
   const maxAttempts = normalizePositiveInteger(job.maxAttempts, DEFAULT_JOB_MAX_ATTEMPTS);
   return {
     ...job,
+    generationMode: normalizeGenerationMode(job.generationMode),
     attempt: normalizePositiveInteger(job.attempt, 1),
     maxAttempts,
     rootJobId: job.rootJobId ?? job.id
