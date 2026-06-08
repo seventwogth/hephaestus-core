@@ -45,3 +45,6 @@ GitHub Actions запускает production-readiness baseline на Ubuntu:
   остальные checks получают `none`.
 - После bootstrap оркестратор чистит workspace по artifact allowlist и пишет
   результат в `ARTIFACT_RETENTION.json` и `GENERATION_REPORT.json`.
+- Telegram file queue остается local/dev backend: он хранит leases, attempts,
+  retry lineage, optional idempotency keys и `dead_letter` status в
+  `jobs.json`; production backend всё ещё должен быть вынесен в Postgres/Redis.

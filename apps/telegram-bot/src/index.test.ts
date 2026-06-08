@@ -212,7 +212,13 @@ describe("HephaestusTelegramBot", () => {
     expect(cancelActions[0]?.text).toContain(`Задание отменено: ${job.id}`);
     expect(retryActions[0]?.text).toContain("Повтор поставлен в очередь");
     expect(jobs.some((item) => item.id === job.id && item.status === "cancelled")).toBe(true);
-    expect(jobs.some((item) => item.id !== job.id && item.status === "pending")).toBe(true);
+    const retriedJob = jobs.find((item) => item.id !== job.id && item.status === "pending");
+    expect(retriedJob).toBeDefined();
+    expect(retriedJob).toMatchObject({
+      attempt: 2,
+      rootJobId: job.id,
+      retryOfJobId: job.id
+    });
   });
 });
 
@@ -255,9 +261,38 @@ describe("persistent Telegram bot state", () => {
 
       const reloadedQueue = new FileProjectJobQueue(join(rootDir, "jobs.json"));
       await expect(reloadedQueue.listByChat(100)).resolves.toEqual([
-        expect.objectContaining({ id: job.id, status: "pending" })
+        expect.objectContaining({ id: job.id, status: "pending", attempt: 1, maxAttempts: 3, rootJobId: job.id })
       ]);
       await expect(new FilePollingOffsetStore(join(rootDir, "offset.json")).read()).resolves.toBe(42);
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("deduplicates file queue enqueue calls with the same idempotency key", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "hephaestus-telegram-state-"));
+
+    try {
+      const queue = new FileProjectJobQueue(join(rootDir, "jobs.json"));
+      const firstJob = await queue.enqueue({
+        chatId: 100,
+        description: "Создай сервис книг",
+        selectedModel: { id: "quality", label: "Quality" },
+        idempotencyKey: "chat-100-message-42"
+      });
+      const secondJob = await queue.enqueue({
+        chatId: 100,
+        description: "Создай сервис книг",
+        selectedModel: { id: "quality", label: "Quality" },
+        idempotencyKey: "chat-100-message-42"
+      });
+      const jobs = await queue.listByChat(100);
+
+      expect(secondJob.id).toBe(firstJob.id);
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]).toMatchObject({
+        idempotencyKey: "chat-100-message-42"
+      });
     } finally {
       await rm(rootDir, { recursive: true, force: true });
     }
@@ -271,6 +306,7 @@ describe("persistent Telegram bot state", () => {
       const filePath = join(rootDir, "jobs.json");
       const queue = new FileProjectJobQueue(filePath, {
         jobLeaseMs: 1_000,
+        maxAttempts: 2,
         now: () => currentTime
       });
       const job = await queue.enqueue({
@@ -283,6 +319,7 @@ describe("persistent Telegram bot state", () => {
       expect(claimed).toMatchObject({
         id: job.id,
         status: "running",
+        attempt: 1,
         leaseExpiresAt: "2026-01-01T00:00:01.000Z"
       });
 
@@ -290,6 +327,7 @@ describe("persistent Telegram bot state", () => {
 
       const reloadedQueue = new FileProjectJobQueue(filePath, {
         jobLeaseMs: 1_000,
+        maxAttempts: 2,
         now: () => currentTime
       });
       const recovered = await reloadedQueue.claimNext();
@@ -297,8 +335,42 @@ describe("persistent Telegram bot state", () => {
       expect(recovered).toMatchObject({
         id: job.id,
         status: "running",
+        attempt: 2,
         startedAt: "2026-01-01T00:00:02.000Z",
         leaseExpiresAt: "2026-01-01T00:00:03.000Z"
+      });
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  it("moves repeatedly expired running jobs to dead-letter", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "hephaestus-telegram-state-"));
+    let currentTime = new Date("2026-01-01T00:00:00.000Z");
+
+    try {
+      const filePath = join(rootDir, "jobs.json");
+      const queue = new FileProjectJobQueue(filePath, {
+        jobLeaseMs: 1_000,
+        maxAttempts: 1,
+        now: () => currentTime
+      });
+      const job = await queue.enqueue({
+        chatId: 100,
+        description: "Создай сервис книг",
+        selectedModel: { id: "quality", label: "Quality" }
+      });
+      await queue.claimNext();
+      currentTime = new Date("2026-01-01T00:00:02.000Z");
+
+      await expect(queue.claimNext()).resolves.toBeNull();
+      const jobs = await queue.listByChat(100);
+
+      expect(jobs[0]).toMatchObject({
+        id: job.id,
+        status: "dead_letter",
+        deadLetterAt: "2026-01-01T00:00:02.000Z",
+        error: "Job lease expired after 1 attempt(s)"
       });
     } finally {
       await rm(rootDir, { recursive: true, force: true });

@@ -30,6 +30,7 @@
 - В основной bootstrap flow встроены `integrator` и `documentation` agent stages, а также автоматический `validate -> fixer -> revalidate` цикл после генерации кода.
 - Добавлен локальный CLI entrypoint для того же LLM-first потока: проект можно запускать напрямую на машине с Ollama/Hermes без Telegram.
 - Telegram-бот теперь хранит сессии, очередь заданий и polling offset на диске, а долгие генерации выполняет через persistent job queue с уведомлениями о старте, успехе и ошибке.
+- File queue усилен Phase 2 lifecycle primitives: idempotency keys, attempts, retry lineage, lease recovery и dead-letter при исчерпании lease recovery attempts.
 - Telegram polling UI и queue worker теперь можно запускать раздельно как отдельные процессы/сервисы на хост-машине.
 - Добавлен интерактивный `setup.sh`, который помогает подготовить хост-машину, установить зависимости, сгенерировать `.env.hephaestus` и быстро поднять Telegram runtime.
 - Документация и пользовательские тексты шаблона переведены на русский.
@@ -37,6 +38,7 @@
 ## Частично сделано
 
 - Phase 1 sandbox hardening закрывает ключевые execution boundary риски: file/path boundary, command env isolation, runtime cache cleanup, timeout escalation, output limit, generation report failure summary, Docker runner command interface, validation image, env-based worker/CLI wiring, per-check network policy, Docker storage limit option, hard workspace disk quota и post-bootstrap artifact allowlist покрыты тестами/smoke checks.
+- Phase 2 durable queue начата с усиления local/dev file backend и общего job lifecycle, но ещё нет Postgres/Redis backend, ownership fields и retention policy.
 - Оркестратор теперь умеет проходить основные этапы через LLM, но детерминированные генераторы всё ещё остаются fallback-путём и частью legacy-команд `requirements/plan/generate-*`.
 - Telegram-бот теперь переживает рестарты по session/queue state и умеет работать в разделенном `poll/worker` режиме, но ещё нет готовых service units для systemd/launchd/Windows Service.
 - Промпты agent stages уже охватывают full-stack flow, но качество результата всё ещё зависит от силы локальной модели и пока не разделено на более узкие под-агенты по доменам.
@@ -44,7 +46,7 @@
 
 ## Следующие крупные шаги
 
-1. Перейти к Phase 2 production roadmap: durable queue, leases, idempotency keys, retry attempts и dead-letter jobs.
+1. Продолжить Phase 2 production roadmap: выбрать durable backend и вынести `ProjectJobQueue` storage contract под Postgres/Redis реализацию.
 2. Добавить готовые service templates для `systemd`, `launchd` и Windows Service, чтобы `poll` и `worker` поднимались как фоновые сервисы.
 3. Добавить команды управления заданиями из Telegram: повторный запуск, отмена pending job, просмотр детального лога и путь к последнему проекту.
 4. Расширить backend/frontend генераторы и агентные промпты с одной основной сущности до нескольких связанных ресурсов поверх уже расширенного DB-плана.

@@ -111,6 +111,7 @@ export interface BootstrapProjectInput {
   chatId: number;
   description: string;
   selectedModel: ModelOption;
+  idempotencyKey?: string;
 }
 
 export interface BootstrappedProject {
@@ -123,7 +124,7 @@ export interface ProjectBootstrapper {
   bootstrap(input: BootstrapProjectInput): Promise<BootstrappedProject>;
 }
 
-export type ProjectJobStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
+export type ProjectJobStatus = "pending" | "running" | "completed" | "failed" | "cancelled" | "dead_letter";
 
 export interface ProjectJob {
   id: string;
@@ -132,10 +133,16 @@ export interface ProjectJob {
   selectedModel: ModelOption;
   status: ProjectJobStatus;
   queuedAt: string;
+  attempt: number;
+  maxAttempts: number;
+  rootJobId: string;
   startedAt?: string;
   finishedAt?: string;
   leaseExpiresAt?: string;
   cancelledAt?: string;
+  deadLetterAt?: string;
+  retryOfJobId?: string;
+  idempotencyKey?: string;
   projectDir?: string;
   projectName?: string;
   error?: string;
@@ -157,6 +164,11 @@ export class InMemoryProjectJobQueue implements ProjectJobQueue {
   private readonly jobs: ProjectJob[] = [];
 
   async enqueue(input: BootstrapProjectInput): Promise<ProjectJob> {
+    const existingJob = findIdempotentJob(this.jobs, input.idempotencyKey);
+    if (existingJob) {
+      return existingJob;
+    }
+
     const job = createProjectJob(input);
     this.jobs.push(job);
     return job;
@@ -184,6 +196,7 @@ export class InMemoryProjectJobQueue implements ProjectJobQueue {
       status: "running" as const,
       startedAt: new Date().toISOString(),
       leaseExpiresAt: undefined,
+      deadLetterAt: undefined,
       error: undefined
     };
     this.jobs[index] = claimed;
@@ -218,11 +231,22 @@ export class InMemoryProjectJobQueue implements ProjectJobQueue {
       throw new Error(`Job is not finished yet: ${jobId}`);
     }
 
-    return this.enqueue({
-      chatId,
-      description: job.description,
-      selectedModel: job.selectedModel
-    });
+    const retriedJob = createProjectJob(
+      {
+        chatId,
+        description: job.description,
+        selectedModel: job.selectedModel
+      },
+      new Date(),
+      {
+        attempt: job.attempt + 1,
+        maxAttempts: job.maxAttempts,
+        rootJobId: job.rootJobId,
+        retryOfJobId: job.id
+      }
+    );
+    this.jobs.push(retriedJob);
+    return retriedJob;
   }
 
   async cancel(jobId: string, chatId: number): Promise<ProjectJob> {
@@ -250,7 +274,7 @@ export class InMemoryProjectJobQueue implements ProjectJobQueue {
       throw new Error(`Unknown project job: ${jobId}`);
     }
 
-    if (this.jobs[index].status === "cancelled" && isTerminalPatch(patch)) {
+    if (isProtectedTerminalStatus(this.jobs[index].status) && isTerminalPatch(patch)) {
       return this.jobs[index];
     }
 
@@ -264,6 +288,7 @@ export class FileProjectJobQueue implements ProjectJobQueue {
   private readonly lockTimeoutMs: number;
   private readonly lockStaleMs: number;
   private readonly jobLeaseMs: number;
+  private readonly maxAttempts: number;
   private readonly now: () => Date;
 
   constructor(
@@ -272,19 +297,28 @@ export class FileProjectJobQueue implements ProjectJobQueue {
       lockTimeoutMs?: number;
       lockStaleMs?: number;
       jobLeaseMs?: number;
+      maxAttempts?: number;
       now?: () => Date;
     } = {}
   ) {
     this.lockTimeoutMs = options.lockTimeoutMs ?? 5_000;
     this.lockStaleMs = options.lockStaleMs ?? 300_000;
     this.jobLeaseMs = options.jobLeaseMs ?? 600_000;
+    this.maxAttempts = options.maxAttempts ?? DEFAULT_JOB_MAX_ATTEMPTS;
     this.now = options.now ?? (() => new Date());
   }
 
   async enqueue(input: BootstrapProjectInput): Promise<ProjectJob> {
     return this.withLock(async () => {
-      const job = createProjectJob(input, this.now());
       const jobs = await this.readAll();
+      const existingJob = findIdempotentJob(jobs, input.idempotencyKey);
+      if (existingJob) {
+        return existingJob;
+      }
+
+      const job = createProjectJob(input, this.now(), {
+        maxAttempts: this.maxAttempts
+      });
       jobs.push(job);
       await this.writeAll(jobs);
       return job;
@@ -317,6 +351,7 @@ export class FileProjectJobQueue implements ProjectJobQueue {
         status: "running" as const,
         startedAt: this.now().toISOString(),
         leaseExpiresAt: leaseDeadline(this.now(), this.jobLeaseMs).toISOString(),
+        deadLetterAt: undefined,
         error: undefined
       };
       jobs[index] = claimed;
@@ -386,7 +421,13 @@ export class FileProjectJobQueue implements ProjectJobQueue {
           description: job.description,
           selectedModel: job.selectedModel
         },
-        this.now()
+        this.now(),
+        {
+          attempt: job.attempt + 1,
+          maxAttempts: job.maxAttempts,
+          rootJobId: job.rootJobId,
+          retryOfJobId: job.id
+        }
       );
       jobs.push(retriedJob);
       await this.writeAll(jobs);
@@ -430,7 +471,7 @@ export class FileProjectJobQueue implements ProjectJobQueue {
         throw new Error(`Unknown project job: ${jobId}`);
       }
 
-      if (jobs[index].status === "cancelled" && isTerminalPatch(patch)) {
+      if (isProtectedTerminalStatus(jobs[index].status) && isTerminalPatch(patch)) {
         return jobs[index];
       }
 
@@ -442,7 +483,7 @@ export class FileProjectJobQueue implements ProjectJobQueue {
   }
 
   private async readAll(): Promise<ProjectJob[]> {
-    return readJsonFile(this.filePath, [] as ProjectJob[]);
+    return (await readJsonFile(this.filePath, [] as ProjectJob[])).map(normalizeProjectJob);
   }
 
   private async writeAll(jobs: ProjectJob[]): Promise<void> {
@@ -1049,10 +1090,15 @@ function renderJobDetails(job: ProjectJob): string {
     `Задание: ${job.id}`,
     `Статус: ${translateJobStatus(job.status)}`,
     `Модель: ${job.selectedModel.label}`,
+    `Попытка: ${job.attempt}/${job.maxAttempts}`,
     `Создано: ${job.queuedAt}`,
+    job.rootJobId !== job.id ? `Корневое задание: ${job.rootJobId}` : null,
+    job.retryOfJobId ? `Повтор задания: ${job.retryOfJobId}` : null,
+    job.idempotencyKey ? `Idempotency key: ${job.idempotencyKey}` : null,
     job.startedAt ? `Запущено: ${job.startedAt}` : null,
     job.finishedAt ? `Завершено: ${job.finishedAt}` : null,
     job.cancelledAt ? `Отменено: ${job.cancelledAt}` : null,
+    job.deadLetterAt ? `Dead-letter: ${job.deadLetterAt}` : null,
     job.projectName ? `Проект: ${job.projectName}` : null,
     job.projectDir ? `Директория: ${job.projectDir}` : null,
     job.error ? `Ошибка: ${job.error}` : null
@@ -1150,15 +1196,35 @@ async function parseTelegramResponse(response: Response): Promise<{ ok: boolean;
   return payload;
 }
 
-function createProjectJob(input: BootstrapProjectInput, date = new Date()): ProjectJob {
+const DEFAULT_JOB_MAX_ATTEMPTS = 3;
+
+interface CreateProjectJobOptions {
+  attempt?: number;
+  maxAttempts?: number;
+  rootJobId?: string;
+  retryOfJobId?: string;
+}
+
+function createProjectJob(
+  input: BootstrapProjectInput,
+  date = new Date(),
+  options: CreateProjectJobOptions = {}
+): ProjectJob {
   const now = date.toISOString();
+  const id = `job-${now.replaceAll(/[:.]/g, "").replace("T", "-").replace("Z", "")}-${randomUUID().slice(0, 8)}`;
+  const maxAttempts = Math.max(1, options.maxAttempts ?? DEFAULT_JOB_MAX_ATTEMPTS);
   return {
-    id: `job-${now.replaceAll(/[:.]/g, "").replace("T", "-").replace("Z", "")}-${randomUUID().slice(0, 8)}`,
+    id,
     chatId: input.chatId,
     description: input.description,
     selectedModel: input.selectedModel,
     status: "pending",
-    queuedAt: now
+    queuedAt: now,
+    attempt: Math.max(1, options.attempt ?? 1),
+    maxAttempts,
+    rootJobId: options.rootJobId ?? id,
+    retryOfJobId: options.retryOfJobId,
+    idempotencyKey: input.idempotencyKey
   };
 }
 
@@ -1174,15 +1240,21 @@ function translateJobStatus(status: ProjectJobStatus): string {
       return "ошибка";
     case "cancelled":
       return "отменено";
+    case "dead_letter":
+      return "dead-letter";
   }
 }
 
 function isTerminalJobStatus(status: ProjectJobStatus): boolean {
-  return status === "completed" || status === "failed" || status === "cancelled";
+  return status === "completed" || status === "failed" || status === "cancelled" || status === "dead_letter";
 }
 
 function isTerminalPatch(patch: Partial<ProjectJob>): boolean {
-  return patch.status === "completed" || patch.status === "failed";
+  return patch.status === "completed" || patch.status === "failed" || patch.status === "dead_letter";
+}
+
+function isProtectedTerminalStatus(status: ProjectJobStatus): boolean {
+  return status === "cancelled" || status === "dead_letter";
 }
 
 function timestampLabel(date: Date): string {
@@ -1258,12 +1330,49 @@ function recoverExpiredRunningJobs(jobs: ProjectJob[], now: Date): ProjectJob[] 
       return job;
     }
 
+    if (job.attempt >= job.maxAttempts) {
+      const nowIso = now.toISOString();
+      return {
+        ...job,
+        status: "dead_letter",
+        finishedAt: nowIso,
+        deadLetterAt: nowIso,
+        leaseExpiresAt: undefined,
+        error: `Job lease expired after ${job.attempt} attempt(s)`
+      };
+    }
+
     return {
       ...job,
       status: "pending",
-      leaseExpiresAt: undefined
+      attempt: job.attempt + 1,
+      startedAt: undefined,
+      leaseExpiresAt: undefined,
+      error: `Recovered from expired lease at ${now.toISOString()}`
     };
   });
+}
+
+function findIdempotentJob(jobs: ProjectJob[], idempotencyKey: string | undefined): ProjectJob | null {
+  if (!idempotencyKey) {
+    return null;
+  }
+
+  return jobs.find((job) => job.idempotencyKey === idempotencyKey) ?? null;
+}
+
+function normalizeProjectJob(job: ProjectJob): ProjectJob {
+  const maxAttempts = normalizePositiveInteger(job.maxAttempts, DEFAULT_JOB_MAX_ATTEMPTS);
+  return {
+    ...job,
+    attempt: normalizePositiveInteger(job.attempt, 1),
+    maxAttempts,
+    rootJobId: job.rootJobId ?? job.id
+  };
+}
+
+function normalizePositiveInteger(value: number | undefined, fallback: number): number {
+  return Number.isInteger(value) && value !== undefined && value > 0 ? value : fallback;
 }
 
 function leaseDeadline(now: Date, leaseMs: number): Date {
